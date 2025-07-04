@@ -25,7 +25,7 @@ endchoice
 
 choice BOARD_TYPE
     prompt "Board Type"
-    default BOARD_TYPE_BREAD_COMPACT_WIFI
+    default BOARD_TYPE_GEZIPAI
     help
         Board type. 开发板类型
     config BOARD_TYPE_BREAD_COMPACT_WIFI
@@ -81,6 +81,9 @@ choice BOARD_TYPE
         depends on IDF_TARGET_ESP32C3
     config BOARD_TYPE_KEVIN_SP_V3_DEV
         bool "Kevin SP V3开发板"
+        depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_GEZIPAI
+        bool "Gezipai"
         depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_KEVIN_SP_V4_DEV
         bool "Kevin SP V4开发板"
