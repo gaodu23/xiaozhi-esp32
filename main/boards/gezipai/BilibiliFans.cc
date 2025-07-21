@@ -2,6 +2,8 @@
 #include "settings.h"
 #include "mcp_server.h"
 #include <esp_log.h>
+#include <memory>
+#include <http.h>
 
 #define TAG "BilibiliFans"
 
@@ -22,7 +24,8 @@ bool BilibiliFans::RefreshFollowerCount()
     refresh_in_progress_ = true;
 
     auto &board = Board::GetInstance();
-    auto http = board.CreateHttp();
+    auto network = board.GetNetwork();
+    auto http = std::unique_ptr<Http>(network->CreateHttp(3));
 
     std::string url = "https://api.bilibili.com/x/relation/stat?vmid=" + uid_;
     http->SetHeader("User-Agent", "Mozilla/5.0");
@@ -30,13 +33,11 @@ bool BilibiliFans::RefreshFollowerCount()
     if (!http->Open("GET", url))
     {
         ESP_LOGE(TAG, "Failed to open HTTP connection");
-        delete http;
         refresh_in_progress_ = false;
         return false;
     }
 
     std::string response = http->ReadAll();
-    delete http;
 
     cJSON *root = cJSON_Parse(response.c_str());
     if (root == NULL)

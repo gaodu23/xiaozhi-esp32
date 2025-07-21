@@ -6,6 +6,8 @@
 #include <cJSON.h>
 #include "esp_event.h"
 #include "esp_wifi.h"
+#include <string>
+#include <memory>
 
 
 class BilibiliFans 
