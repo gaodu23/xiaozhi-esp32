@@ -318,33 +318,28 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
     }
 
     PropertyList arguments = (*tool_iter)->properties();
-    try {
-        for (auto& argument : arguments) {
-            bool found = false;
-            if (cJSON_IsObject(tool_arguments)) {
-                auto value = cJSON_GetObjectItem(tool_arguments, argument.name().c_str());
-                if (argument.type() == kPropertyTypeBoolean && cJSON_IsBool(value)) {
-                    argument.set_value<bool>(value->valueint == 1);
-                    found = true;
-                } else if (argument.type() == kPropertyTypeInteger && cJSON_IsNumber(value)) {
-                    argument.set_value<int>(value->valueint);
-                    found = true;
-                } else if (argument.type() == kPropertyTypeString && cJSON_IsString(value)) {
-                    argument.set_value<std::string>(value->valuestring);
-                    found = true;
-                }
-            }
-
-            if (!argument.has_default_value() && !found) {
-                ESP_LOGE(TAG, "tools/call: Missing valid argument: %s", argument.name().c_str());
-                ReplyError(id, "Missing valid argument: " + argument.name());
-                return;
+    
+    for (auto& argument : arguments) {
+        bool found = false;
+        if (cJSON_IsObject(tool_arguments)) {
+            auto value = cJSON_GetObjectItem(tool_arguments, argument.name().c_str());
+            if (argument.type() == kPropertyTypeBoolean && cJSON_IsBool(value)) {
+                argument.set_value<bool>(value->valueint == 1);
+                found = true;
+            } else if (argument.type() == kPropertyTypeInteger && cJSON_IsNumber(value)) {
+                argument.set_value<int>(value->valueint);
+                found = true;
+            } else if (argument.type() == kPropertyTypeString && cJSON_IsString(value)) {
+                argument.set_value<std::string>(value->valuestring);
+                found = true;
             }
         }
-    } catch (const std::exception& e) {
-        ESP_LOGE(TAG, "tools/call: %s", e.what());
-        ReplyError(id, e.what());
-        return;
+
+        if (!argument.has_default_value() && !found) {
+            ESP_LOGE(TAG, "tools/call: Missing valid argument: %s", argument.name().c_str());
+            ReplyError(id, "Missing valid argument: " + argument.name());
+            return;
+        }
     }
 
     // Start a task to receive data with stack size
@@ -356,12 +351,8 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
 
     // Use a thread to call the tool to avoid blocking the main thread
     tool_call_thread_ = std::thread([this, id, tool_iter, arguments = std::move(arguments)]() {
-        try {
-            ReplyResult(id, (*tool_iter)->Call(arguments));
-        } catch (const std::exception& e) {
-            ESP_LOGE(TAG, "tools/call: %s", e.what());
-            ReplyError(id, e.what());
-        }
+        auto result = (*tool_iter)->Call(arguments);
+        ReplyResult(id, result);
     });
     tool_call_thread_.detach();
 }

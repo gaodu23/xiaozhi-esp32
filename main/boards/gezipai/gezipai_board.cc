@@ -4,6 +4,7 @@
 #include "application.h"
 #include "button.h"
 #include "config.h"
+#include "gesture_mouse.h"
 
 #include <esp_log.h>
 #include <driver/i2c_master.h>
@@ -21,9 +22,11 @@ class GezipaiBoard : public WifiBoard
 private:
     Button boot_button_;
     i2c_master_bus_handle_t codec_i2c_bus_;
+    i2c_master_bus_handle_t sensor_i2c_bus_;  // 专用于QMI8658传感器的I2C总线
     esp_timer_handle_t led_timer_;
     adc_oneshot_unit_handle_t adc1_handle_;
     int last_battery_percentage_;
+    gesture_mouse_t gesture_mouse_;
 
     // LED定时器回调函数
     static void LedTimerCallback(void *arg)
@@ -49,6 +52,24 @@ private:
             },
         };
         ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &codec_i2c_bus_));
+    }
+
+    void InitializeSensorI2c()
+    {
+        // Initialize I2C peripheral for QMI8658 sensor
+        i2c_master_bus_config_t sensor_i2c_cfg = {
+            .i2c_port = I2C_NUM_1,
+            .sda_io_num = QMI8658_I2C_SDA_PIN,  // GPIO_NUM_11
+            .scl_io_num = QMI8658_I2C_SCL_PIN,  // GPIO_NUM_12
+            .clk_source = I2C_CLK_SRC_DEFAULT,
+            .glitch_ignore_cnt = 7,
+            .intr_priority = 0,
+            .trans_queue_depth = 0,
+            .flags = {
+                .enable_internal_pullup = 1,
+            },
+        };
+        ESP_ERROR_CHECK(i2c_new_master_bus(&sensor_i2c_cfg, &sensor_i2c_bus_));
     }
 
     void InitializeButtons()
@@ -97,6 +118,26 @@ private:
         last_battery_percentage_ = 50; // 默认50%
     }
 
+    void InitializeGestureMouse()
+    {
+        ESP_LOGI(TAG, "Initializing gesture mouse...");
+        
+        // 使用专用的传感器I2C总线和共享的ADC句柄
+        bool success = gesture_mouse_init(&gesture_mouse_, sensor_i2c_bus_, adc1_handle_);
+        if (!success) {
+            ESP_LOGE(TAG, "Failed to initialize gesture mouse");
+            return;
+        }
+        
+        // 启动体感鼠标
+        success = gesture_mouse_start(&gesture_mouse_);
+        if (!success) {
+            ESP_LOGE(TAG, "Failed to start gesture mouse");
+        } else {
+            ESP_LOGI(TAG, "Gesture mouse started successfully");
+        }
+    }
+
     // 简单的电池电量读取
     int GetSimpleBatteryLevel()
     {
@@ -126,13 +167,19 @@ public:
         ESP_ERROR_CHECK(gpio_config(&led_config));
 
         InitializeCodecI2c();
+        InitializeSensorI2c();  // 初始化传感器I2C总线
         InitializeButtons();
         InitializeBatteryAdc();
         InitializeTimer();
+        InitializeGestureMouse();  // 初始化体感鼠标
     }
 
     ~GezipaiBoard()
     {
+        // 停止体感鼠标
+        gesture_mouse_stop(&gesture_mouse_);
+        gesture_mouse_deinit(&gesture_mouse_);
+        
         // 停止定时器
         esp_timer_stop(led_timer_);
         esp_timer_delete(led_timer_);
@@ -146,7 +193,7 @@ public:
         static Es8311AudioCodec audio_codec(codec_i2c_bus_, I2C_NUM_0, AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
                                             AUDIO_I2S_GPIO_MCLK, AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, AUDIO_I2S_GPIO_DOUT, AUDIO_I2S_GPIO_DIN,
                                             AUDIO_CODEC_PA_PIN, AUDIO_CODEC_ES8311_ADDR, true);
-        ESP_LOGI(TAG, "Audio codec initialized successfully");
+        // ESP_LOGI(TAG, "Audio codec initialized successfully");
         return &audio_codec;
     }
 

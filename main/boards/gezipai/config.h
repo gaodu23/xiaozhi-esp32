@@ -26,6 +26,13 @@
 
 #define BATTERY_ADC_PIN GPIO_NUM_3
 
+// QMI8658 6DOF IMU sensor pins (dedicated I2C bus)
+#define QMI8658_I2C_SDA_PIN GPIO_NUM_11
+#define QMI8658_I2C_SCL_PIN GPIO_NUM_12
+
+// Gesture mouse button detection via ADC
+#define GESTURE_BUTTON_ADC_PIN GPIO_NUM_9  // ADC1_CH8
+
 // #define ML307_RX_PIN GPIO_NUM_12
 // #define ML307_TX_PIN GPIO_NUM_13
 

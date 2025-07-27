@@ -267,6 +267,7 @@ endif()
 idf_component_register(SRCS ${SOURCES}
                     EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
+                    REQUIRES bt app_update spi_flash efuse esp_adc esp_common
                     WHOLE_ARCHIVE
                     )
 

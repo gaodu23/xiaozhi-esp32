@@ -9,6 +9,7 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#include <cassert>
 
 #include <cJSON.h>
 
@@ -45,17 +46,19 @@ public:
     Property(const std::string& name, PropertyType type, int min_value, int max_value)
         : name_(name), type_(type), has_default_value_(false), min_value_(min_value), max_value_(max_value) {
         if (type != kPropertyTypeInteger) {
-            throw std::invalid_argument("Range limits only apply to integer properties");
+            // ESP-IDF doesn't support exceptions, use assert instead
+            assert(type == kPropertyTypeInteger && "Range limits only apply to integer properties");
         }
     }
 
     Property(const std::string& name, PropertyType type, int default_value, int min_value, int max_value)
         : name_(name), type_(type), has_default_value_(true), min_value_(min_value), max_value_(max_value) {
         if (type != kPropertyTypeInteger) {
-            throw std::invalid_argument("Range limits only apply to integer properties");
+            // ESP-IDF doesn't support exceptions, use assert instead
+            assert(type == kPropertyTypeInteger && "Range limits only apply to integer properties");
         }
         if (default_value < min_value || default_value > max_value) {
-            throw std::invalid_argument("Default value must be within the specified range");
+            assert(default_value >= min_value && default_value <= max_value && "Default value must be within the specified range");
         }
         value_ = default_value;
     }
@@ -77,10 +80,12 @@ public:
         // 添加对设置的整数值进行范围检查
         if constexpr (std::is_same_v<T, int>) {
             if (min_value_.has_value() && value < min_value_.value()) {
-                throw std::invalid_argument("Value is below minimum allowed: " + std::to_string(min_value_.value()));
+                assert(value >= min_value_.value() && "Value is below minimum allowed");
+                return; // 不设置无效值
             }
             if (max_value_.has_value() && value > max_value_.value()) {
-                throw std::invalid_argument("Value exceeds maximum allowed: " + std::to_string(max_value_.value()));
+                assert(value <= max_value_.value() && "Value exceeds maximum allowed");
+                return; // 不设置无效值
             }
         }
         value_ = value;
@@ -138,7 +143,11 @@ public:
                 return property;
             }
         }
-        throw std::runtime_error("Property not found: " + name);
+        // ESP-IDF doesn't support exceptions, use assert instead
+        assert(false && "Property not found");
+        // Return a static dummy property to avoid compiler warnings
+        static Property dummy("", kPropertyTypeInteger, 0);
+        return dummy;
     }
 
     auto begin() { return properties_.begin(); }
