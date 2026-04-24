@@ -1,0 +1,12 @@
+services:
+  ota-server:
+    build: .
+    container_name: xiaozhi-ota-server
+    ports:
+      - "8090:8090"
+    volumes:
+      # 固件目录映射到宿主机的 ./firmware 文件夹
+      - ./firmware:/firmware
+    restart: always
+    environment:
+      - FIRMWARE_DIR=/firmware
