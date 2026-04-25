@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir flask==3.1.0 \
+RUN pip install --no-cache-dir flask==3.1.0 requests==2.32.3 \
     -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple \
     --trusted-host mirrors.tuna.tsinghua.edu.cn
 

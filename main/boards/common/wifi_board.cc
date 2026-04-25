@@ -88,6 +88,15 @@ void WifiBoard::StartNetwork() {
 
 void WifiBoard::TryWifiConnect() {
     auto& ssid_manager = SsidManager::GetInstance();
+
+    // If no SSID saved yet, write the compile-time default (if configured)
+#if defined(CONFIG_DEFAULT_WIFI_SSID) && defined(CONFIG_DEFAULT_WIFI_PASSWORD)
+    if (ssid_manager.GetSsidList().empty() && strlen(CONFIG_DEFAULT_WIFI_SSID) > 0) {
+        ESP_LOGI(TAG, "No WiFi credentials found, adding default SSID: %s", CONFIG_DEFAULT_WIFI_SSID);
+        ssid_manager.AddSsid(CONFIG_DEFAULT_WIFI_SSID, CONFIG_DEFAULT_WIFI_PASSWORD);
+    }
+#endif
+
     bool have_ssid = !ssid_manager.GetSsidList().empty();
 
     if (have_ssid) {
