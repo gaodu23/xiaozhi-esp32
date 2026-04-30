@@ -11,13 +11,14 @@
 #ifndef RNET_CONTROLLER_H
 #define RNET_CONTROLLER_H
 
-#include <Arduino.h>
 #include "driver/gpio.h"
 #include "driver/twai.h"
-#include "driver/ledc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include <string.h>
 
 /** 转向修正回调类型——在 10ms 心跳任务中调用，用于 IMU 闭环航向校正等场景 */
 typedef int8_t (*TurnCorrectionCallback)(int8_t speed, int8_t turn, float dt);
@@ -25,27 +26,11 @@ typedef int8_t (*TurnCorrectionCallback)(int8_t speed, int8_t turn, float dt);
 /* ======================== 默认引脚定义 ======================== */
 
 #ifndef PIN_CAN_TX
-#define PIN_CAN_TX GPIO_NUM_21
+#define PIN_CAN_TX GPIO_NUM_45
 #endif
 
 #ifndef PIN_CAN_RX
-#define PIN_CAN_RX GPIO_NUM_14
-#endif
-
-#ifndef PIN_WAKE_MOS_H
-#define PIN_WAKE_MOS_H GPIO_NUM_10
-#endif
-
-#ifndef PIN_WAKE_MOS_L
-#define PIN_WAKE_MOS_L GPIO_NUM_9
-#endif
-
-#ifndef PIN_TJA_EN
-#define PIN_TJA_EN GPIO_NUM_11
-#endif
-
-#ifndef PIN_TJA_STB
-#define PIN_TJA_STB GPIO_NUM_12
+#define PIN_CAN_RX GPIO_NUM_46
 #endif
 
 /* ======================== R-Net 摇杆协议常量 ======================== */
@@ -172,13 +157,6 @@ typedef int8_t (*TurnCorrectionCallback)(int8_t speed, int8_t turn, float dt);
 /** 菜单导航摇杆幅度 */
 #define RNET_MENU_NAV_SPEED        80
 
-/* ======================== LEDC PWM 配置 ======================== */
-#define WAKE_LEDC_TIMER LEDC_TIMER_0
-#define WAKE_LEDC_CHANNEL LEDC_CHANNEL_0
-#define WAKE_LEDC_SPEED_MODE LEDC_LOW_SPEED_MODE
-#define WAKE_LEDC_DUTY_RES LEDC_TIMER_8_BIT
-#define WAKE_LEDC_DUTY_50PCT 128
-
 /* ======================== FreeRTOS 任务配置 ======================== */
 #define RNET_TASK_STACK_SIZE 4096
 #define RNET_TASK_PRIORITY (configMAX_PRIORITIES - 1)
@@ -192,8 +170,6 @@ typedef int8_t (*TurnCorrectionCallback)(int8_t speed, int8_t turn, float dt);
 enum class RNetState : uint8_t
 {
     IDLE = 0, // 未初始化
-    SLEEPING, // TJA1055 休眠模式
-    WAKING,   // 正在执行唤醒序列
     RUNNING,  // 正常运行，心跳发送中
     ERROR     // 错误状态
 };
@@ -231,21 +207,6 @@ public:
      * @return true 初始化成功
      */
     bool begin();
-
-    /**
-     * @brief 执行完整的 R-Net 唤醒序列并启动心跳任务
-     *
-     * 唤醒流程：
-     *   1. TJA1055 进入 Sleep 模式 (EN=0, STB=0)
-     *   2. 输出 2kHz PWM 到 WAKE_MOS 持续 500ms (24V 总线脉冲)
-     *   3. TJA1055 进入 Normal 模式 (EN=1, STB=1)
-     *   4. 等待 2 秒让 R-Net 系统稳定
-     *   5. 安装并启动 TWAI 驱动
-     *   6. 创建 FreeRTOS 心跳发送任务
-     *
-     * @return true 唤醒成功
-     */
-    bool wakeUp();
 
     /**
      * @brief 设置摇杆值
@@ -501,16 +462,6 @@ public:
      */
     int sendAttackFrameBurst();
 
-    /**
-     * @brief 使 TJA1055 进入 Sleep 模式 (EN=0, STB=0)
-     */
-    void tja1055Sleep();
-
-    /**
-     * @brief 使 TJA1055 进入 Normal 模式 (EN=1, STB=1)
-     */
-    void tja1055Normal();
-
     /* ==================== 硬件限位保护 ==================== */
 
     /**
@@ -618,9 +569,6 @@ private:
     /* --- 引脚配置 --- */
     gpio_num_t _pinCanTx;
     gpio_num_t _pinCanRx;
-    gpio_num_t _pinWakeMos;
-    gpio_num_t _pinTjaEn;
-    gpio_num_t _pinTjaStb;
 
     /* --- 摇杆数据 (由互斥锁保护) --- */
     volatile int8_t _speed;       // 速度 [-100, +100]
@@ -750,16 +698,6 @@ private:
      * 到期时发送一次 hornOff 帧停止鸣叫。
      */
     void handleHornTick();
-
-    /**
-     * @brief 初始化 GPIO 引脚模式
-     */
-    void initGPIO();
-
-    /**
-     * @brief 执行 2kHz PWM 唤醒脉冲 (使用 LEDC 硬件 PWM)
-     */
-    void generateWakePulse();
 
     /**
      * @brief 安装并启动 TWAI/CAN 驱动 (125kbps, 扩展帧)

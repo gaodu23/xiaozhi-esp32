@@ -36,6 +36,7 @@ set(SOURCES "audio/audio_codec.cc"
             "settings.cc"
             "device_state_machine.cc"
             "assets.cc"
+            "wheelchair_controller.cc"
             "main.cc"
             )
 
@@ -988,6 +989,7 @@ idf_component_register(SRCS ${SOURCES}
                         efuse
                         bt
                         fatfs
+                        RnetLIB
                         ${MAIN_PRIV_REQUIRES_EXTRA}
                     )
 

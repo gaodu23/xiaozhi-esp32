@@ -1,5 +1,11 @@
-#include "wifi_board.h"
+#include "ml307_board.h"
+#include "wheelchair_controller.h"
+#include "hwt101_sensor.h"
+#include "qmi8658_sensor.h"
 #include "codecs/es8311_audio_codec.h"
+#include <esp_wifi.h>
+#include <esp_netif.h>
+#include <lwip/ip_addr.h>
 #include "display/lcd_display.h"
 #include "system_reset.h"
 #include "application.h"
@@ -100,7 +106,7 @@ class Pmic : public Axp2101 {
         }
     };
 
-class CustomBoard : public WifiBoard {
+class CustomBoard : public Ml307Board {
 private:
     Button boot_button_;
     Pmic* pmic_ = nullptr;
@@ -258,12 +264,17 @@ private:
 
     void InitializeButtons() {
         boot_button_.OnClick([this]() {
-            auto& app = Application::GetInstance();
-            if (app.GetDeviceState() == kDeviceStateStarting) {
-                EnterWifiConfigMode();
-                return;
+            // ML307 模式下无 WiFi 配网，直接切换语音对话状态
+            Application::GetInstance().ToggleChatState();
+        });
+        // 长按 BOOT 键触发轮椅紧急停止
+        boot_button_.OnLongPress([this]() {
+            WheelchairSetSafetyState(SAFETY_EMERGENCY);
+            auto* ctrl = GetWheelchairController();
+            if (ctrl) {
+                ctrl->stop();
+                ctrl->seatStop();
             }
-            app.ToggleChatState();
         });
     }
 
@@ -299,8 +310,48 @@ private:
         ESP_LOGI(TAG, "Touch panel initialized successfully");
     }
 
+    // 启动 WiFi AP，供手机/平板直接连接并通过 TCP 控制轮椅
+    void InitializeWifiAP() {
+        // 初始化网络层（幂等）
+        esp_netif_init();
+        esp_event_loop_create_default();
+
+        // 初始化 WiFi 驱动（AP 模式，不用 WifiManager）
+        wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
+        wifi_cfg.nvs_enable = false;
+        ESP_ERROR_CHECK(esp_wifi_init(&wifi_cfg));
+
+        // 创建 AP 网络接口并配置固定 IP 192.168.4.1/24
+        esp_netif_t* ap_netif = esp_netif_create_default_wifi_ap();
+        esp_netif_ip_info_t ip_info = {};
+        IP4_ADDR(&ip_info.ip,      192, 168, 4, 1);
+        IP4_ADDR(&ip_info.gw,      192, 168, 4, 1);
+        IP4_ADDR(&ip_info.netmask, 255, 255, 255, 0);
+        esp_netif_dhcps_stop(ap_netif);
+        esp_netif_set_ip_info(ap_netif, &ip_info);
+        esp_netif_dhcps_start(ap_netif);
+
+        // 配置 AP：SSID / WPA2 密码 / 最多 4 个客户端
+        wifi_config_t ap_cfg = {};
+        const char* ssid     = "Wheelchair";
+        const char* password = "wheelchair123";
+        strncpy((char*)ap_cfg.ap.ssid,     ssid,     sizeof(ap_cfg.ap.ssid) - 1);
+        strncpy((char*)ap_cfg.ap.password, password, sizeof(ap_cfg.ap.password) - 1);
+        ap_cfg.ap.ssid_len       = (uint8_t)strlen(ssid);
+        ap_cfg.ap.channel        = 6;
+        ap_cfg.ap.max_connection = 4;
+        ap_cfg.ap.authmode       = WIFI_AUTH_WPA2_PSK;
+
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
+        ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+        ESP_ERROR_CHECK(esp_wifi_start());
+        ESP_LOGI(TAG, "WiFi AP 已启动: SSID=Wheelchair  IP=192.168.4.1  TCP 端口=%d", WHEELCHAIR_TCP_PORT);
+    }
+
 public:
     CustomBoard() :
+        Ml307Board(ML307_TX_PIN, ML307_RX_PIN),
         boot_button_(BOOT_BUTTON_GPIO) {
         
         InitializeI2c();
@@ -316,7 +367,12 @@ public:
         InitializeTouch();
 #endif
         InitializeButtons();
-        InitializeCamera();
+        // Camera 已禁用: GPIO45/46/17/18/39/40 被 CAN / HWT101 / 4G 占用
+        // InitializeCamera();
+        HWT101Init();                // HWT101 单轴偏航传感器 (UART1)
+        QMI8658Init(i2c_bus_);       // QMI8658 六轴 IMU (I2C, 同音频总线)
+        InitializeWifiAP();          // AP 模式，手机直连 192.168.4.1
+        StartWheelchairTcpServer();  // AP 就绪后立即启动 TCP 控制服务器
         GetBacklight()->RestoreBrightness();
     }
 
@@ -339,6 +395,11 @@ public:
         return camera_;
     }
 
+    virtual void SetNetworkEventCallback(NetworkEventCallback callback) override {
+        // ML307 联网事件直接透传（TCP 服务器已在构造函数里随 WiFi AP 启动）
+        Ml307Board::SetNetworkEventCallback(std::move(callback));
+    }
+
 #if PMIC_ENABLE      
     virtual bool GetBatteryLevel(int &level, bool& charging, bool& discharging) override {
         static bool last_discharging = false;
@@ -357,7 +418,7 @@ public:
         if (level != PowerSaveLevel::LOW_POWER) {
             power_save_timer_->WakeUp();
         }
-        WifiBoard::SetPowerSaveLevel(level);
+        Ml307Board::SetPowerSaveLevel(level);
     }
 #endif
 };

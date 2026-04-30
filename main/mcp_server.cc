@@ -4,6 +4,7 @@
  */
 
 #include "mcp_server.h"
+#include "wheelchair_controller.h"
 #include <esp_log.h>
 #include <esp_app_desc.h>
 #include <algorithm>
@@ -123,6 +124,9 @@ void McpServer::AddCommonTools() {
 
     // Restore the original tools list to the end of the tools list
     tools_.insert(tools_.end(), original_tools.begin(), original_tools.end());
+
+    // 注册轮椅控制工具 (wheelchair_move / stop / seat / horn / light)
+    RegisterWheelchairMcpTools();
 }
 
 void McpServer::AddUserOnlyTools() {

@@ -74,5 +74,25 @@
 #define CAM_PIN_D6      GPIO_NUM_39
 #define CAM_PIN_D7      GPIO_NUM_21
 
+/* ======================== 轮椅控制引脚定义 ========================
+ * 以下引脚复用自未使用的摄像头接口 (摄像头已禁用)
+ * ================================================================ */
+
+/** R-Net CAN 总线 (TJA1055 LSFT CAN 125kbps) */
+#define PIN_CAN_TX      GPIO_NUM_45   // 原 CAM_PIN_D0
+#define PIN_CAN_RX      GPIO_NUM_46   // 原 CAM_PIN_D3
+
+/** HWT101 航姿传感器 UART (yaw 轴) */
+#define HWT101_UART_NUM UART_NUM_1
+#define HWT101_RX_PIN   GPIO_NUM_17   // 原 CAM_PIN_VSYNC  (ESP 侧 RX)
+#define HWT101_TX_PIN   GPIO_NUM_18   // 原 CAM_PIN_HREF   (ESP 侧 TX)
+#define HWT101_BAUD     115200
+
+/** 4G 模块 ML307 UART */
+#define ML307_UART_NUM  UART_NUM_2
+#define ML307_TX_PIN    GPIO_NUM_39   // 原 CAM_PIN_D6  (ESP 侧 TX → 模块 RX)
+#define ML307_RX_PIN    GPIO_NUM_40   // 原 CAM_PIN_D5  (ESP 侧 RX ← 模块 TX)
+#define ML307_BAUD      115200
+
 
 #endif // _BOARD_CONFIG_H_

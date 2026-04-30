@@ -2,9 +2,14 @@
 #include "config.h"
 #include "custom_lcd_display.h"
 #include "lcd_display.h"
+#include "hwt101_sensor.h"
+#include "qmi8658_sensor.h"
+#include "wheelchair_controller.h"
 #include "assets/lang_config.h"
 #include "settings.h"
 #include "board.h"
+
+#include <math.h>
 
 #include <vector>
 #include <cstring>
@@ -283,4 +288,486 @@ CustomLcdDisplay::CustomLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_p
 
     // Note: SetupUI() should be called by Application::Initialize(), not in constructor
     // to ensure lvgl objects are created after the display is fully initialized.
+}
+
+/* ================================================================
+ * 布局常量 (480 × 320 横屏)
+ * ================================================================ */
+#define TOP_BAR_H    28     ///< 顶栏高度
+#define IMU_BAR_H    28     ///< 底部 IMU 条高度
+#define MAIN_H       264    ///< 主区域高度 = 320 - 28 - 28
+#define IMU_BAR_Y    292    ///< IMU 条起始 y
+
+#define JOY_PANEL_W  230    ///< 左侧摇杆面板宽度
+#define CTRL_X       230    ///< 右侧控制面板起始 x
+#define CTRL_W       250    ///< 右侧控制面板宽度
+
+/* 摇杆圆形尺寸 */
+#define JOY_DIA      210    ///< 摇杆底座直径
+#define JOY_KNOB_D   52     ///< 摇杆旋钮直径
+#define JOY_X        ((JOY_PANEL_W - JOY_DIA) / 2)   // = 10
+#define JOY_Y        (TOP_BAR_H + (MAIN_H - JOY_DIA) / 2) // = 55
+
+/* 控制按钮行列（屏幕绝对坐标） */
+#define CBTN_Y0     (TOP_BAR_H + 5)           // = 33  第1行 (UP buttons)
+#define CBTN_H_ACT  55                          // 电推杆按钮高度
+#define CBTN_Y1     (CBTN_Y0 + CBTN_H_ACT + 2) // = 90  第2行 (DOWN buttons)
+#define CBTN_W_ACT  82                          // 每列宽度 (250/3 ≈ 82)
+#define CBTN_Y2     (CBTN_Y1 + CBTN_H_ACT + 4) // = 149 ACT STOP
+#define CBTN_H_STD  46                          // 标准按钮高度
+#define CBTN_Y3     (CBTN_Y2 + CBTN_H_STD + 3) // = 198 模式按钮行
+#define CBTN_Y4     (CBTN_Y3 + CBTN_H_STD + 3) // = 247 速度按钮行
+
+/* 颜色分区 */
+#define CLR_BG_DARK  lv_color_hex(0x0C1A2E)  ///< 深蓝背景
+#define CLR_BG_PANEL lv_color_hex(0x112233)  ///< 面板背景
+#define CLR_BTN_NORM lv_color_hex(0x1B3A5C)  ///< 普通按钮
+#define CLR_BTN_PRES lv_color_hex(0x2E6A9E)  ///< 按下状态
+#define CLR_BTN_STOP lv_color_hex(0x6B1A1A)  ///< STOP 按钮
+#define CLR_BTN_DRIV lv_color_hex(0x1A4A1A)  ///< DRIVE 模式
+#define CLR_BTN_SEAT lv_color_hex(0x1A1A4A)  ///< SEAT 模式
+#define CLR_JOY_BASE lv_color_hex(0x1A3050)  ///< 摇杆底座
+#define CLR_JOY_KNOB lv_color_hex(0x4090D0)  ///< 摇杆旋钮
+#define CLR_TEXT     lv_color_hex(0xD0E8FF)  ///< 文字颜色
+#define CLR_IMU_TEXT lv_color_hex(0x00FF88)  ///< IMU 绿色文字
+#define CLR_BORDER   lv_color_hex(0x2A5A8C)  ///< 边框颜色
+
+/* ================================================================
+ * 辅助：创建控制按钮
+ * ================================================================ */
+lv_obj_t* CustomLcdDisplay::MakeCtrlBtn(lv_obj_t* parent, const char* text,
+                                         int x, int y, int w, int h,
+                                         WcAction action, bool hold_mode)
+{
+    lv_obj_t* btn = lv_button_create(parent);
+    lv_obj_set_pos(btn, x, y);
+    lv_obj_set_size(btn, w, h);
+    lv_obj_set_style_bg_color(btn, CLR_BTN_NORM, 0);
+    lv_obj_set_style_bg_color(btn, CLR_BTN_PRES, LV_STATE_PRESSED);
+    lv_obj_set_style_radius(btn, 6, 0);
+    lv_obj_set_style_border_width(btn, 1, 0);
+    lv_obj_set_style_border_color(btn, CLR_BORDER, 0);
+    lv_obj_set_style_shadow_width(btn, 0, 0);
+    lv_obj_set_style_pad_all(btn, 2, 0);
+
+    lv_obj_t* lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, text);
+    lv_obj_center(lbl);
+    lv_obj_set_style_text_color(lbl, CLR_TEXT, 0);
+
+    void* ud = (void*)(intptr_t)action;
+    if (hold_mode) {
+        /* 长按：PRESSING 保持发送，RELEASED/PRESS_LOST 停止 */
+        lv_obj_add_event_cb(btn, ControlBtnCb, LV_EVENT_PRESSED,    ud);
+        lv_obj_add_event_cb(btn, ControlBtnCb, LV_EVENT_PRESSING,   ud);
+        lv_obj_add_event_cb(btn, ControlBtnCb, LV_EVENT_RELEASED,   ud);
+        lv_obj_add_event_cb(btn, ControlBtnCb, LV_EVENT_PRESS_LOST, ud);
+    } else {
+        /* 点击：CLICKED 单次触发 */
+        lv_obj_add_event_cb(btn, ControlBtnCb, LV_EVENT_CLICKED,    ud);
+    }
+    return btn;
+}
+
+/* ================================================================
+ * SetupUI —— 主界面布局
+ * ================================================================ */
+void CustomLcdDisplay::SetupUI()
+{
+    /* 1. 先初始化基类 UI（顶栏、状态、表情、聊天等） */
+    LcdDisplay::SetupUI();
+
+    DisplayLockGuard lock(this);
+    auto* scr = lv_screen_active();
+
+    /* ---- 压低表情栏 z-order，让控制面板在它上面 ---- */
+    if (emoji_box_) lv_obj_set_pos(emoji_box_, 5, TOP_BAR_H + 4);
+
+    /* ====================================================================
+     * 2. 左侧摇杆面板背景
+     * ==================================================================== */
+    lv_obj_t* left_panel = lv_obj_create(scr);
+    lv_obj_set_pos(left_panel, 0, TOP_BAR_H);
+    lv_obj_set_size(left_panel, JOY_PANEL_W, MAIN_H);
+    lv_obj_set_style_bg_color(left_panel, CLR_BG_DARK, 0);
+    lv_obj_set_style_bg_opa(left_panel, LV_OPA_90, 0);
+    lv_obj_set_style_border_width(left_panel, 0, 0);
+    lv_obj_set_style_radius(left_panel, 0, 0);
+    lv_obj_set_style_pad_all(left_panel, 0, 0);
+    lv_obj_clear_flag(left_panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* 分割线 */
+    lv_obj_t* divider = lv_obj_create(scr);
+    lv_obj_set_pos(divider, JOY_PANEL_W - 1, TOP_BAR_H);
+    lv_obj_set_size(divider, 2, MAIN_H);
+    lv_obj_set_style_bg_color(divider, CLR_BORDER, 0);
+    lv_obj_set_style_border_width(divider, 0, 0);
+    lv_obj_set_style_radius(divider, 0, 0);
+    lv_obj_set_style_pad_all(divider, 0, 0);
+
+    /* ====================================================================
+     * 3. 虚拟摇杆
+     * ==================================================================== */
+    joy_base_ = lv_obj_create(scr);
+    lv_obj_set_pos(joy_base_, JOY_X, JOY_Y);
+    lv_obj_set_size(joy_base_, JOY_DIA, JOY_DIA);
+    lv_obj_set_style_radius(joy_base_, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(joy_base_, CLR_JOY_BASE, 0);
+    lv_obj_set_style_bg_opa(joy_base_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(joy_base_, 3, 0);
+    lv_obj_set_style_border_color(joy_base_, CLR_BORDER, 0);
+    lv_obj_set_style_pad_all(joy_base_, 0, 0);
+    lv_obj_set_style_shadow_width(joy_base_, 8, 0);
+    lv_obj_set_style_shadow_color(joy_base_, CLR_BORDER, 0);
+    lv_obj_set_style_shadow_opa(joy_base_, LV_OPA_50, 0);
+    lv_obj_clear_flag(joy_base_, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* 摇杆十字刻度线 */
+    lv_obj_t* hline = lv_obj_create(joy_base_);
+    lv_obj_set_size(hline, JOY_DIA - 20, 1);
+    lv_obj_set_style_bg_color(hline, lv_color_hex(0x2A5070), 0);
+    lv_obj_set_style_border_width(hline, 0, 0);
+    lv_obj_set_style_radius(hline, 0, 0);
+    lv_obj_center(hline);
+
+    lv_obj_t* vline = lv_obj_create(joy_base_);
+    lv_obj_set_size(vline, 1, JOY_DIA - 20);
+    lv_obj_set_style_bg_color(vline, lv_color_hex(0x2A5070), 0);
+    lv_obj_set_style_border_width(vline, 0, 0);
+    lv_obj_set_style_radius(vline, 0, 0);
+    lv_obj_center(vline);
+
+    /* 方向文字提示 (↑ ↓ ← →) */
+    const char* dir_chars[] = { LV_SYMBOL_UP, LV_SYMBOL_DOWN,
+                                 LV_SYMBOL_LEFT, LV_SYMBOL_RIGHT };
+    int dir_x[] = { 0, 0, -(JOY_DIA/2 - 14), (JOY_DIA/2 - 14) };
+    int dir_y[] = { -(JOY_DIA/2 - 14), (JOY_DIA/2 - 14), 0, 0 };
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t* dl = lv_label_create(joy_base_);
+        lv_label_set_text(dl, dir_chars[i]);
+        lv_obj_set_style_text_color(dl, lv_color_hex(0x3A6090), 0);
+        lv_obj_align(dl, LV_ALIGN_CENTER, dir_x[i], dir_y[i]);
+    }
+
+    /* 旋钮 */
+    joy_knob_ = lv_obj_create(joy_base_);
+    lv_obj_set_size(joy_knob_, JOY_KNOB_D, JOY_KNOB_D);
+    lv_obj_set_style_radius(joy_knob_, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(joy_knob_, CLR_JOY_KNOB, 0);
+    lv_obj_set_style_border_width(joy_knob_, 2, 0);
+    lv_obj_set_style_border_color(joy_knob_, lv_color_hex(0x70C0FF), 0);
+    lv_obj_set_style_shadow_width(joy_knob_, 6, 0);
+    lv_obj_set_style_shadow_color(joy_knob_, lv_color_hex(0x2060A0), 0);
+    lv_obj_set_style_pad_all(joy_knob_, 0, 0);
+    lv_obj_center(joy_knob_);
+    lv_obj_clear_flag(joy_knob_, LV_OBJ_FLAG_CLICKABLE);
+
+    /* 摇杆方向文字（居中实时显示 "FWD" / "STOP" 等） */
+    joy_dir_lbl_ = lv_label_create(scr);
+    lv_label_set_text(joy_dir_lbl_, "STOP");
+    lv_obj_set_style_text_color(joy_dir_lbl_, lv_color_hex(0x5080B0), 0);
+    lv_obj_set_pos(joy_dir_lbl_,
+        JOY_X + JOY_DIA/2 - 20,
+        JOY_Y + JOY_DIA + 4);
+
+    /* 注册摇杆事件 */
+    lv_obj_add_event_cb(joy_base_, JoystickEventCb, LV_EVENT_PRESSING,   this);
+    lv_obj_add_event_cb(joy_base_, JoystickEventCb, LV_EVENT_RELEASED,   this);
+    lv_obj_add_event_cb(joy_base_, JoystickEventCb, LV_EVENT_PRESS_LOST, this);
+
+    /* ====================================================================
+     * 4. 右侧控制面板背景
+     * ==================================================================== */
+    lv_obj_t* right_panel = lv_obj_create(scr);
+    lv_obj_set_pos(right_panel, CTRL_X, TOP_BAR_H);
+    lv_obj_set_size(right_panel, CTRL_W, MAIN_H);
+    lv_obj_set_style_bg_color(right_panel, CLR_BG_PANEL, 0);
+    lv_obj_set_style_bg_opa(right_panel, LV_OPA_90, 0);
+    lv_obj_set_style_border_width(right_panel, 0, 0);
+    lv_obj_set_style_radius(right_panel, 0, 0);
+    lv_obj_set_style_pad_all(right_panel, 0, 0);
+    lv_obj_clear_flag(right_panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* ---- 列标题 ---- */
+    const char* col_titles[] = { "TILT", "RECL", "LEGS" };
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t* lbl = lv_label_create(scr);
+        lv_label_set_text(lbl, col_titles[i]);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0x6090C0), 0);
+        lv_obj_set_pos(lbl, CTRL_X + i * CBTN_W_ACT + CBTN_W_ACT/2 - 16,
+                             CBTN_Y0 - 17);
+    }
+
+    /* ---- UP 行 ---- */
+    MakeCtrlBtn(scr, LV_SYMBOL_UP " TILT",
+                CTRL_X + 0*CBTN_W_ACT + 1, CBTN_Y0, CBTN_W_ACT - 2, CBTN_H_ACT,
+                WCA_TILT_UP, true);
+    MakeCtrlBtn(scr, LV_SYMBOL_UP " RECL",
+                CTRL_X + 1*CBTN_W_ACT + 1, CBTN_Y0, CBTN_W_ACT - 2, CBTN_H_ACT,
+                WCA_RECL_UP, true);
+    MakeCtrlBtn(scr, LV_SYMBOL_UP " LEGS",
+                CTRL_X + 2*CBTN_W_ACT + 1, CBTN_Y0, CBTN_W_ACT - 2, CBTN_H_ACT,
+                WCA_LEGS_UP, true);
+
+    /* ---- DOWN 行 ---- */
+    MakeCtrlBtn(scr, LV_SYMBOL_DOWN " TILT",
+                CTRL_X + 0*CBTN_W_ACT + 1, CBTN_Y1, CBTN_W_ACT - 2, CBTN_H_ACT,
+                WCA_TILT_DOWN, true);
+    MakeCtrlBtn(scr, LV_SYMBOL_DOWN " RECL",
+                CTRL_X + 1*CBTN_W_ACT + 1, CBTN_Y1, CBTN_W_ACT - 2, CBTN_H_ACT,
+                WCA_RECL_DOWN, true);
+    MakeCtrlBtn(scr, LV_SYMBOL_DOWN " LEGS",
+                CTRL_X + 2*CBTN_W_ACT + 1, CBTN_Y1, CBTN_W_ACT - 2, CBTN_H_ACT,
+                WCA_LEGS_DOWN, true);
+
+    /* ---- ACT STOP (全宽) ---- */
+    lv_obj_t* stop_btn = MakeCtrlBtn(scr, LV_SYMBOL_STOP " ACT STOP",
+                CTRL_X + 1, CBTN_Y2, CTRL_W - 2, CBTN_H_STD,
+                WCA_ACT_STOP, false);
+    lv_obj_set_style_bg_color(stop_btn, CLR_BTN_STOP, 0);
+    lv_obj_set_style_bg_color(stop_btn, lv_color_hex(0x9E2A2A), LV_STATE_PRESSED);
+
+    /* ---- 模式按钮 ---- */
+    lv_obj_t* drv_btn = MakeCtrlBtn(scr, LV_SYMBOL_DRIVE " DRIVE",
+                CTRL_X + 1, CBTN_Y3, CTRL_W/2 - 2, CBTN_H_STD,
+                WCA_MODE_DRIVE, false);
+    lv_obj_set_style_bg_color(drv_btn, CLR_BTN_DRIV, 0);
+    lv_obj_set_style_bg_color(drv_btn, lv_color_hex(0x2E8A2E), LV_STATE_PRESSED);
+
+    lv_obj_t* seat_btn = MakeCtrlBtn(scr, LV_SYMBOL_SETTINGS " SEAT",
+                CTRL_X + CTRL_W/2 + 1, CBTN_Y3, CTRL_W/2 - 2, CBTN_H_STD,
+                WCA_MODE_SEAT, false);
+    lv_obj_set_style_bg_color(seat_btn, CLR_BTN_SEAT, 0);
+    lv_obj_set_style_bg_color(seat_btn, lv_color_hex(0x2A2A8A), LV_STATE_PRESSED);
+
+    /* ---- 速度调节行 ---- */
+    MakeCtrlBtn(scr, LV_SYMBOL_MINUS,
+                CTRL_X + 1, CBTN_Y4, 50, CBTN_H_STD - 8,
+                WCA_SPD_DOWN, false);
+
+    spd_label_ = lv_label_create(scr);
+    lv_obj_set_pos(spd_label_, CTRL_X + 54, CBTN_Y4 + 6);
+    lv_label_set_text_fmt(spd_label_, "SPD %d%%", WheelchairGetSpeedPct());
+    lv_obj_set_style_text_color(spd_label_, CLR_TEXT, 0);
+
+    MakeCtrlBtn(scr, LV_SYMBOL_PLUS,
+                CTRL_X + CTRL_W - 51, CBTN_Y4, 50, CBTN_H_STD - 8,
+                WCA_SPD_UP, false);
+
+    /* ====================================================================
+     * 5. IMU 底部条
+     * ==================================================================== */
+    lv_obj_t* imu_bg = lv_obj_create(scr);
+    lv_obj_set_pos(imu_bg, 0, IMU_BAR_Y);
+    lv_obj_set_size(imu_bg, LV_HOR_RES, IMU_BAR_H);
+    lv_obj_set_style_bg_color(imu_bg, lv_color_hex(0x050D1A), 0);
+    lv_obj_set_style_border_width(imu_bg, 0, 0);
+    lv_obj_set_style_radius(imu_bg, 0, 0);
+    lv_obj_set_style_pad_all(imu_bg, 0, 0);
+    lv_obj_clear_flag(imu_bg, LV_OBJ_FLAG_SCROLLABLE);
+
+    imu_label_ = lv_label_create(scr);
+    lv_label_set_text(imu_label_, "Yaw:  0.0  P:  0.0  R:  0.0  [INIT]");
+    lv_obj_set_style_text_color(imu_label_, CLR_IMU_TEXT, 0);
+    lv_obj_set_pos(imu_label_, 6, IMU_BAR_Y + 6);
+    lv_obj_move_foreground(imu_label_);
+
+    /* ====================================================================
+     * 6. 把顶栏/状态栏/低电量弹窗提到最前面（覆盖控制面板）
+     * ==================================================================== */
+    if (top_bar_)           lv_obj_move_foreground(top_bar_);
+    if (status_bar_)        lv_obj_move_foreground(status_bar_);
+    if (bottom_bar_)        lv_obj_move_foreground(bottom_bar_);
+
+    /* ====================================================================
+     * 7. 5 Hz 定时刷新 IMU 标签
+     * ==================================================================== */
+    imu_timer_ = lv_timer_create(ImuTimerCb, 200, this);
+}
+
+/* ================================================================
+ * JoystickEventCb —— 摇杆触摸处理
+ * ================================================================ */
+void CustomLcdDisplay::JoystickEventCb(lv_event_t* e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    auto* self = static_cast<CustomLcdDisplay*>(lv_event_get_user_data(e));
+    if (!self) return;
+
+    /* 松开 / 失去焦点 → 旋钮回中，停止 */
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        lv_obj_align(self->joy_knob_, LV_ALIGN_CENTER, 0, 0);
+        if (self->joy_dir_lbl_) lv_label_set_text(self->joy_dir_lbl_, "STOP");
+        WheelchairDirectStop();
+        return;
+    }
+    if (code != LV_EVENT_PRESSING) return;
+
+    /* 获取触点屏幕坐标 */
+    lv_indev_t* indev = lv_indev_active();
+    if (!indev) return;
+    lv_point_t pt;
+    lv_indev_get_point(indev, &pt);
+
+    /* 摇杆底座中心（屏幕坐标） */
+    lv_area_t area;
+    lv_obj_get_coords(self->joy_base_, &area);
+    int cx = (area.x1 + area.x2) / 2;
+    int cy = (area.y1 + area.y2) / 2;
+
+    float dx = (float)(pt.x - cx);
+    float dy = (float)(pt.y - cy);
+    float dist = sqrtf(dx * dx + dy * dy);
+
+    /* 限制旋钮在底座圆内 */
+    int max_r = JOY_DIA / 2 - JOY_KNOB_D / 2 - 4;
+    if (dist > max_r) {
+        dx = dx * max_r / dist;
+        dy = dy * max_r / dist;
+        dist = (float)max_r;
+    }
+    lv_obj_align(self->joy_knob_, LV_ALIGN_CENTER, (int)dx, (int)dy);
+
+    /* 死区 15% → 停止 */
+    float dead = max_r * 0.15f;
+    if (dist < dead) {
+        if (self->joy_dir_lbl_) lv_label_set_text(self->joy_dir_lbl_, "STOP");
+        WheelchairDirectStop();
+        return;
+    }
+
+    /* 映射到 -127..127（dy 负 = 向上 = 前进） */
+    int8_t speed = (int8_t)(-dy * 127.0f / max_r);
+    int8_t turn  = (int8_t)( dx * 127.0f / max_r);
+
+    /* 方向文字（8 方向） */
+    if (self->joy_dir_lbl_) {
+        float angle = atan2f(dy, dx) * 180.0f / 3.14159f;
+        const char* dir;
+        if      (angle >= -22.5f  && angle <  22.5f)  dir = LV_SYMBOL_RIGHT " RIGHT";
+        else if (angle >=  22.5f  && angle <  67.5f)  dir = LV_SYMBOL_DOWN  " BWD-R";
+        else if (angle >=  67.5f  && angle < 112.5f)  dir = LV_SYMBOL_DOWN  " BWD";
+        else if (angle >= 112.5f  && angle < 157.5f)  dir = LV_SYMBOL_DOWN  " BWD-L";
+        else if (angle >= 157.5f  || angle < -157.5f) dir = LV_SYMBOL_LEFT  " LEFT";
+        else if (angle >= -157.5f && angle < -112.5f) dir = LV_SYMBOL_UP    " FWD-L";
+        else if (angle >= -112.5f && angle <  -67.5f) dir = LV_SYMBOL_UP    " FWD";
+        else                                            dir = LV_SYMBOL_UP    " FWD-R";
+        lv_label_set_text(self->joy_dir_lbl_, dir);
+    }
+
+    WheelchairDirectDrive(speed, turn);
+}
+
+/* ================================================================
+ * ControlBtnCb —— 普通控制按钮（电推杆 / 模式 / 速度）
+ * ================================================================ */
+void CustomLcdDisplay::ControlBtnCb(lv_event_t* e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    WcAction action = (WcAction)(intptr_t)lv_event_get_user_data(e);
+
+    bool pressing  = (code == LV_EVENT_PRESSED   || code == LV_EVENT_PRESSING);
+    bool releasing = (code == LV_EVENT_RELEASED  || code == LV_EVENT_PRESS_LOST);
+    bool clicked   = (code == LV_EVENT_CLICKED);
+
+    switch (action) {
+    /* ---- 电推杆（长按保持）---- */
+    case WCA_TILT_UP:
+        if (pressing)  WheelchairDirectActuator(RNET_MOTOR_TILT, true);
+        if (releasing) WheelchairDirectActuatorStop();
+        break;
+    case WCA_TILT_DOWN:
+        if (pressing)  WheelchairDirectActuator(RNET_MOTOR_TILT, false);
+        if (releasing) WheelchairDirectActuatorStop();
+        break;
+    case WCA_RECL_UP:
+        if (pressing)  WheelchairDirectActuator(RNET_MOTOR_RECLINE, true);
+        if (releasing) WheelchairDirectActuatorStop();
+        break;
+    case WCA_RECL_DOWN:
+        if (pressing)  WheelchairDirectActuator(RNET_MOTOR_RECLINE, false);
+        if (releasing) WheelchairDirectActuatorStop();
+        break;
+    case WCA_LEGS_UP:
+        if (pressing)  WheelchairDirectActuator(RNET_MOTOR_LEGS, true);
+        if (releasing) WheelchairDirectActuatorStop();
+        break;
+    case WCA_LEGS_DOWN:
+        if (pressing)  WheelchairDirectActuator(RNET_MOTOR_LEGS, false);
+        if (releasing) WheelchairDirectActuatorStop();
+        break;
+
+    /* ---- ACT STOP（点击）---- */
+    case WCA_ACT_STOP:
+        if (clicked || pressing) WheelchairDirectActuatorStop();
+        break;
+
+    /* ---- 驾驶模式 / 座椅模式（点击）---- */
+    case WCA_MODE_DRIVE:
+        if (clicked) {
+            ESP_LOGI("WC_UI", "切换到驾驶模式");
+            /* R-Net 模式切换预留：调用 setProfile(1) 或具体 CAN 帧 */
+        }
+        break;
+    case WCA_MODE_SEAT:
+        if (clicked) {
+            ESP_LOGI("WC_UI", "切换到座椅模式");
+            /* R-Net 模式切换预留：调用 setProfile(2) 或具体 CAN 帧 */
+        }
+        break;
+
+    /* ---- 速度调节（点击）---- */
+    case WCA_SPD_UP:
+        if (clicked) {
+            int8_t pct = WheelchairGetSpeedPct() + 10;
+            if (pct > 100) pct = 100;
+            WheelchairSetSpeedPct(pct);
+        }
+        break;
+    case WCA_SPD_DOWN:
+        if (clicked) {
+            int8_t pct = WheelchairGetSpeedPct() - 10;
+            if (pct < 10) pct = 10;
+            WheelchairSetSpeedPct(pct);
+        }
+        break;
+    }
+}
+
+/* ================================================================
+ * ImuTimerCb —— 5Hz 刷新 IMU 条 + 速度标签
+ * ================================================================ */
+void CustomLcdDisplay::ImuTimerCb(lv_timer_t* timer)
+{
+    auto* self = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(timer));
+    if (!self) return;
+
+    /* IMU 姿态 */
+    float pitch = 0.0f, roll = 0.0f;
+    QMI8658GetAttitude(&pitch, &roll);
+    float yaw = HWT101GetYaw();
+
+    /* 安全状态 */
+    static const char* state_str[] = { "SAFE", "STOP", "ERR ", "EMRG" };
+    SafetyState ss = WheelchairGetSafetyState();
+    const char* state = (ss >= SAFETY_NORMAL && ss <= SAFETY_EMERGENCY)
+                        ? state_str[ss] : "?   ";
+
+    if (self->imu_label_) {
+        char buf[80];
+        snprintf(buf, sizeof(buf),
+                 "Y:%+6.1f\xc2\xb0  P:%+5.1f\xc2\xb0  R:%+5.1f\xc2\xb0  [%s]",
+                 yaw, pitch, roll, state);
+        lv_label_set_text(self->imu_label_, buf);
+
+        /* 急停时变红 */
+        lv_color_t imu_color = (ss == SAFETY_EMERGENCY || ss == SAFETY_ERROR)
+                               ? lv_color_hex(0xFF4444) : CLR_IMU_TEXT;
+        lv_obj_set_style_text_color(self->imu_label_, imu_color, 0);
+    }
+
+    /* 速度标签 */
+    if (self->spd_label_) {
+        lv_label_set_text_fmt(self->spd_label_, "SPD %d%%", WheelchairGetSpeedPct());
+    }
 }

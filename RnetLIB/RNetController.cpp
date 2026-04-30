@@ -3,11 +3,14 @@
  */
 
 #include "RNetController.h"
+#include <math.h>
+
+static const char *const TAG = "RNet";
 
 /* ==================== 构造 / 析构 ==================== */
 
 RNetController::RNetController()
-    : _pinCanTx(PIN_CAN_TX), _pinCanRx(PIN_CAN_RX), _pinWakeMos(PIN_WAKE_MOS_H), _pinTjaEn(PIN_TJA_EN), _pinTjaStb(PIN_TJA_STB), _speed(0), _turn(0), _dataMutex(nullptr), _state(RNetState::IDLE), _taskRunning(false), _txCount(0), _txErrorCount(0), _actState(ActuatorState::ACT_IDLE), _actMotor(0), _actPositive(true), _actStopCounter(0), _actTickCounter(0), _actTxCount(0), _actTxErrorCount(0),
+    : _pinCanTx(PIN_CAN_TX), _pinCanRx(PIN_CAN_RX), _speed(0), _turn(0), _dataMutex(nullptr), _state(RNetState::IDLE), _taskRunning(false), _txCount(0), _txErrorCount(0), _actState(ActuatorState::ACT_IDLE), _actMotor(0), _actPositive(true), _actStopCounter(0), _actTickCounter(0), _actTxCount(0), _actTxErrorCount(0),
 #if RNET_ENABLE_OMNI_HEARTBEAT
       _omniTickCounter(0), _omniTxCount(0), _omniTxErrorCount(0),
 #endif
@@ -43,32 +46,23 @@ RNetController::~RNetController()
 
 bool RNetController::begin()
 {
-    Serial.println("[RNet] 初始化控制器...");
+    ESP_LOGI(TAG, "初始化控制器...");
 
-    // 创建互斥锁
     if (!_dataMutex)
     {
         _dataMutex = xSemaphoreCreateMutex();
         if (!_dataMutex)
         {
-            Serial.println("[RNet] 错误: 互斥锁创建失败");
+            ESP_LOGE(TAG, "互斥锁创建失败");
             _state = RNetState::ERROR;
             return false;
         }
     }
 
-    // 配置所有 GPIO
-    initGPIO();
-
-    Serial.println("[RNet] ===== 开始 R-Net 唤醒序列 =====");
-    _state = RNetState::WAKING;
-
-    tja1055Normal();
-
-    Serial.println("[RNet] Step 5/5: 启动 TWAI 驱动 (125kbps)...");
+    ESP_LOGI(TAG, "正在启动 TWAI 驱动 (125kbps)...");
     if (!startTWAI())
     {
-        Serial.println("[RNet] 错误: TWAI 驱动启动失败!");
+        ESP_LOGE(TAG, "TWAI 驱动启动失败!");
         _state = RNetState::ERROR;
         return false;
     }
@@ -103,14 +97,14 @@ bool RNetController::begin()
 
     if (ret != pdPASS)
     {
-        Serial.println("[RNet] 错误: 心跳任务创建失败!");
+        ESP_LOGE(TAG, "心跳任务创建失败!");
         stopTWAI();
         _state = RNetState::ERROR;
         return false;
     }
 
     _state = RNetState::RUNNING;
-    Serial.println("[RNet] ===== 唤醒完成, 心跳任务已启动 =====");
+    ESP_LOGI(TAG, "控制器初始化完成, 心跳任务已启动");
 
     _rxTaskRunning = true;
     ret = xTaskCreatePinnedToCore(
@@ -119,7 +113,7 @@ bool RNetController::begin()
     );
     if (ret != pdPASS)
     {
-        Serial.println("[RNet] 警告: CAN 接收任务创建失败, 限位保护将不可用!");
+        ESP_LOGW(TAG, "CAN接收任务创建失败, 限位保护将不可用!");
         _rxTaskRunning = false;
         _canRxTaskHandle = nullptr;
     }
@@ -142,7 +136,7 @@ void RNetController::setJoystick(int8_t speed, int8_t turn)
 
 void RNetController::stop()
 {
-    Serial.println("[RNet] !!! 紧急停止 !!!");
+    ESP_LOGW(TAG, "!!! 紧急停止 !!!");
 
     // 归零摇杆值 + 停止电推杆
     if (xSemaphoreTake(_dataMutex, pdMS_TO_TICKS(5)) == pdTRUE)
@@ -164,23 +158,9 @@ void RNetController::stop()
 
 void RNetController::shutdown()
 {
-    Serial.println("[RNet] 系统关闭中...");
+    ESP_LOGI(TAG, "系统关闭中...");
 
     esp_restart(); // 直接重启 ESP32，简化关闭流程，确保所有资源清理和状态重置
-}
-
-void RNetController::tja1055Sleep()
-{
-    // EN=0, STB=0: Sleep 模式
-    digitalWrite(_pinTjaEn, LOW);
-    digitalWrite(_pinTjaStb, LOW);
-}
-
-void RNetController::tja1055Normal()
-{
-    // EN=1, STB=1: Normal 模式
-    digitalWrite(_pinTjaEn, HIGH);
-    digitalWrite(_pinTjaStb, HIGH);
 }
 
 /* ==================== 座椅/电推杆公共方法 ==================== */
@@ -202,7 +182,7 @@ void RNetController::moveActuator(uint8_t motorIndex, bool positive)
         xSemaphoreGive(_dataMutex);
     }
 
-    Serial.printf("[RNet] 电推杆开始运动: Motor=%d, 方向=%s\n",
+    ESP_LOGI(TAG, "电推杆开始运动: Motor=%d, 方向=%s",
                   motor, positive ? "正向" : "反向");
 }
 
@@ -222,7 +202,7 @@ void RNetController::stopActuator()
         sendActuatorFrame(motor); // 发送一帧 idle
     }
 
-    Serial.printf("[RNet] 电推杆停止: Motor=%d\n", motor);
+    ESP_LOGI(TAG, "电推杆停止: Motor=%d", motor);
 }
 
 /* ==================== 硬件限位保护 ==================== */
@@ -264,7 +244,7 @@ void RNetController::processMenuSelFrame(uint8_t b0)
     {
         int8_t idx = (int8_t)(b0 & 0x0F);
         _seatMenuItem = idx;
-        Serial.printf("[RNet] 座椅菜单选项: %d (byte=0x%02X)\n", idx, b0);
+        ESP_LOGI(TAG, "座椅菜单选项: %d (byte=0x%02X)", idx, b0);
     }
     else
     {
@@ -356,13 +336,13 @@ int RNetController::sendAttackFrameBurst()
         }
     }
 
-    Serial.printf("[RNet] AttackBurst: %d/5 帧已入队\n", queued);
+    ESP_LOGI(TAG, "AttackBurst: %d/5 帧已入队", queued);
     return queued;
 }
 
 void RNetController::actuatorEmergencyStop()
 {
-    Serial.println("[RNet] 电推杆紧急停止!");
+    ESP_LOGW(TAG, "电推杆紧急停止!");
 
     uint8_t motor = _actMotor;
 
@@ -403,7 +383,7 @@ bool RNetController::buzz()
     m.extd = 1; m.rtr = 0; m.data_length_code = 8;
     m.data[0] = 0x02; m.data[1] = 0x60;
     esp_err_t err = twai_transmit(&m, pdMS_TO_TICKS(10));
-    Serial.println("[RNet] buzz");
+    ESP_LOGD(TAG, "buzz");
     return (err == ESP_OK);
 }
 
@@ -504,10 +484,10 @@ bool RNetController::hornBeep(uint32_t duration_ms)
 
 //     m.data[0] = 0x40;
 //     esp_err_t err1 = twai_transmit(&m, pdMS_TO_TICKS(10));
-//     delay(30);
+//     vTaskDelay(pdMS_TO_TICKS(30));
 //     m.data[0] = 0x00; m.data[1] = 0x01; m.data[2] = 0x00; m.data[3] = 0x00;
 //     esp_err_t err2 = twai_transmit(&m, pdMS_TO_TICKS(10));
-//     Serial.println("[RNet] seatMenuEnter");
+//     ESP_LOGI(TAG, "seatMenuEnter");
 //     return (err1 == ESP_OK && err2 == ESP_OK);
 // }
 
@@ -519,10 +499,10 @@ bool RNetController::hornBeep(uint32_t duration_ms)
 
 //     m.data[0] = 0x40; m.data[1] = 0x01;
 //     esp_err_t err1 = twai_transmit(&m, pdMS_TO_TICKS(10));
-//     delay(50);
+//     vTaskDelay(pdMS_TO_TICKS(50));
 //     m.data[0] = 0x00; m.data[1] = 0x00; m.data[2] = 0x00; m.data[3] = 0x00;
 //     esp_err_t err2 = twai_transmit(&m, pdMS_TO_TICKS(10));
-//     Serial.println("[RNet] seatMenuExit");
+//     ESP_LOGI(TAG, "seatMenuExit");
 //     return (err1 == ESP_OK && err2 == ESP_OK);
 // }
 
@@ -534,65 +514,65 @@ bool RNetController::seatMenuEnter()
     m.extd = 0; m.rtr = 0; m.data_length_code = 4;
     m.data[0] = 0x40; m.data[1] = 0x00; m.data[2] = 0x00; m.data[3] = 0x00;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.identifier = 0x00000065;
     m.extd = 0; m.rtr = 0; m.data_length_code = 4;
     m.data[0] = 0x54; m.data[1] = 0x00; m.data[2] = 0x00; m.data[3] = 0x02;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.data[0] = 0x60; m.data[1] = 0x00; m.data[2] = 0x00; m.data[3] = 0x00;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.data[0] = 0x70; m.data[1] = 0x00; m.data[2] = 0x00; m.data[3] = 0x09;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.data[0] = 0x80; m.data[1] = 0x00; m.data[2] = 0x00; m.data[3] = 0x10;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.identifier = 0x00000064;
     m.extd = 0; m.rtr = 0; m.data_length_code = 4;
     m.data[0] = 0x00; m.data[1] = 0x10; m.data[2] = 0x00; m.data[3] = 0x02;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.identifier = 0x00000065;
     m.extd = 0; m.rtr = 0; m.data_length_code = 4;
     m.data[0] = 0x14; m.data[1] = 0x01; m.data[2] = 0x00; m.data[3] = 0x02;
     twai_transmit(&m, pdMS_TO_TICKS(100));
 
-    delay(100);
+    vTaskDelay(pdMS_TO_TICKS(100));
 
     m.identifier = 0x00000065;
     m.extd = 0; m.rtr = 0; m.data_length_code = 4;
     m.data[0] = 0x20; m.data[1] = 0x01; m.data[2] = 0x00; m.data[3] = 0x00;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.identifier = 0x00000062;
     m.extd = 0; m.rtr = 0; m.data_length_code = 4;
     m.data[0] = 0x30; m.data[1] = 0x01; m.data[2] = 0x00; m.data[3] = 0x01;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.identifier = 0x00000065;
     m.extd = 0; m.rtr = 0; m.data_length_code = 4;
     m.data[0] = 0x80; m.data[1] = 0x01; m.data[2] = 0x00; m.data[3] = 0x80;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.identifier = 0x181C0400; // buzz
     m.extd = 1; m.rtr = 0; m.data_length_code = 8;
     m.data[0] = 0x02; m.data[1] = 0x60; m.data[2] = 0x00; m.data[3] = 0x00;
     m.data[4] = 0x00; m.data[5] = 0x00; m.data[6] = 0x00; m.data[7] = 0x00;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(100);
+    vTaskDelay(pdMS_TO_TICKS(100));
 
-    Serial.println("[RNet] seatMenuEnter");
+    ESP_LOGI(TAG, "seatMenuEnter");
     return 1;
 }
 
@@ -604,61 +584,61 @@ bool RNetController::seatMenuExit()
     m.extd = 0; m.rtr = 0; m.data_length_code = 4;
     m.data[0] = 0x40; m.data[1] = 0x01; m.data[2] = 0x00; m.data[3] = 0x00;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.identifier = 0x00000065;
     m.extd = 0; m.rtr = 0; m.data_length_code = 4;
     m.data[0] = 0x54; m.data[1] = 0x01; m.data[2] = 0x00; m.data[3] = 0x02;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.identifier = 0x00000065;
     m.extd = 0; m.rtr = 0; m.data_length_code = 4;
     m.data[0] = 0x60; m.data[1] = 0x01; m.data[2] = 0x00; m.data[3] = 0x00;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.identifier = 0x00000062;
     m.extd = 0; m.rtr = 0; m.data_length_code = 4;
     m.data[0] = 0x70; m.data[1] = 0x01; m.data[2] = 0x00; m.data[3] = 0x09;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.identifier = 0x00000065;
     m.extd = 0; m.rtr = 0; m.data_length_code = 4;
     m.data[0] = 0x80; m.data[1] = 0x01; m.data[2] = 0x00; m.data[3] = 0x10;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.identifier = 0x00000064;
     m.extd = 0; m.rtr = 0; m.data_length_code = 4;
     m.data[0] = 0x00; m.data[1] = 0x00; m.data[2] = 0x00; m.data[3] = 0x00;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.identifier = 0x00000065;
     m.extd = 0; m.rtr = 0; m.data_length_code = 4;
     m.data[0] = 0x14; m.data[1] = 0x00; m.data[2] = 0x00; m.data[3] = 0x02;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.identifier = 0x00000065;
     m.extd = 0; m.rtr = 0; m.data_length_code = 4;
     m.data[0] = 0x20; m.data[1] = 0x00; m.data[2] = 0x00; m.data[3] = 0x00;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.identifier = 0x00000065;
     m.extd = 0; m.rtr = 0; m.data_length_code = 4;
     m.data[0] = 0x30; m.data[1] = 0x00; m.data[2] = 0x00; m.data[3] = 0x01;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.identifier = 0x00000065;
     m.extd = 0; m.rtr = 0; m.data_length_code = 4;
     m.data[0] = 0x80; m.data[1] = 0x00; m.data[2] = 0x00; m.data[3] = 0x80;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
 
 
@@ -666,16 +646,16 @@ bool RNetController::seatMenuExit()
     m.extd = 1; m.rtr = 0; m.data_length_code = 2;
     m.data[0] = 0x01; m.data[1] = 0x01;
     esp_err_t err4 = twai_transmit(&m, pdMS_TO_TICKS(10));
-    delay(30);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     m.identifier = 0x181C0400; // buzz
     m.extd = 1; m.rtr = 0; m.data_length_code = 8;
     m.data[0] = 0x02; m.data[1] = 0x60; m.data[2] = 0x00; m.data[3] = 0x00;
     m.data[4] = 0x00; m.data[5] = 0x00; m.data[6] = 0x00; m.data[7] = 0x00;
     twai_transmit(&m, pdMS_TO_TICKS(100));
-    delay(100);
+    vTaskDelay(pdMS_TO_TICKS(100));
 
-    Serial.println("[RNet] seatMenuExit");
+    ESP_LOGI(TAG, "seatMenuExit");
     return 1;
 }
 
@@ -692,7 +672,7 @@ bool RNetController::setSpeed(uint8_t level)
     m.extd = 1; m.rtr = 0; m.data_length_code = 1;
     m.data[0] = kSpeedTable[level - 1];
     esp_err_t err = twai_transmit(&m, pdMS_TO_TICKS(10));
-    Serial.printf("[RNet] 速度档位 -> %d (0x%02X)\n", level, kSpeedTable[level - 1]);
+    ESP_LOGI(TAG, "速度档位 -> %d (0x%02X)", level, kSpeedTable[level - 1]);
     return (err == ESP_OK);
 }
 
@@ -706,7 +686,7 @@ bool RNetController::setProfile(uint8_t profile)
     m.extd = 0; m.rtr = 0; m.data_length_code = 4;
     m.data[1] = (uint8_t)(profile - 1);
     esp_err_t err = twai_transmit(&m, pdMS_TO_TICKS(10));
-    Serial.printf("[RNet] 配置文件 -> %d\n", profile);
+    ESP_LOGI(TAG, "配置文件 -> %d", profile);
     return (err == ESP_OK);
 }
 
@@ -731,8 +711,8 @@ void RNetController::navStart(uint8_t dest)
     _navModeActive = true;
     _navRunning = true;
     _navDest = dest;
-    _lastNavStartMs = millis();
-    Serial.printf("[Nav] 导航开始, 目标点: %d\n", dest);
+    _lastNavStartMs = (uint32_t)(esp_timer_get_time() / 1000);
+    ESP_LOGI(TAG, "导航开始, 目标点: %d", dest);
 }
 
 void RNetController::navPause()
@@ -741,7 +721,7 @@ void RNetController::navPause()
     {
         _navRunning = false;
         setJoystick(0, 0);
-        Serial.println("[Nav] 导航暂停");
+        ESP_LOGI(TAG, "导航暂停");
     }
 }
 
@@ -751,14 +731,14 @@ void RNetController::navResume(uint8_t dest)
     {
         _navRunning = true;
         _navDest = dest;
-        _lastNavStartMs = millis();
-        Serial.printf("[Nav] 导航恢复, 目标点: %d\n", dest);
+        _lastNavStartMs = (uint32_t)(esp_timer_get_time() / 1000);
+        ESP_LOGI(TAG, "导航恢复, 目标点: %d", dest);
     }
 }
 
 void RNetController::navCancel()
 {
-    Serial.println("[Nav] 导航取消");
+    ESP_LOGI(TAG, "导航取消");
     navReset();
 }
 
@@ -773,13 +753,13 @@ void RNetController::navReset()
 void RNetController::seatMove(uint8_t motorIndex, bool positive)
 {
     _seatModeActive = true;
-    _lastSeatMoveMs = millis();
+    _lastSeatMoveMs = (uint32_t)(esp_timer_get_time() / 1000);
     moveActuator(motorIndex, positive);
 }
 
 void RNetController::seatStop()
 {
-    Serial.println("[RNet] 普通座椅停止");
+    ESP_LOGI(TAG, "普通座椅停止");
     seatModeReset();
 }
 
@@ -800,14 +780,14 @@ void RNetController::seatSpecialExec(int8_t speed)
     if (_specialModeActive)
     {
         _specialExecActive = true;
-        _lastSpecialExecMs = millis();
+        _lastSpecialExecMs = (uint32_t)(esp_timer_get_time() / 1000);
         setJoystick(speed, 0);
     }
 }
 
 void RNetController::seatSpecialExit()
 {
-    Serial.println("[RNet] 特殊座椅退出");
+    ESP_LOGI(TAG, "特殊座椅退出");
     if (_specialMenuEntered)
     {
         seatMenuExit();
@@ -817,14 +797,14 @@ void RNetController::seatSpecialExit()
 
 void RNetController::seatTick()
 {
-    uint32_t now = millis();
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
 
     // --- 普通座椅模式: SEAT_MOVE 超时自动停止 ---
     if (_seatModeActive && (now - _lastSeatMoveMs > RNET_SEAT_CMD_TIMEOUT_MS))
     {
         _seatModeActive = false;
         stopActuator();
-        Serial.println("[Seat] SEAT_MOVE 超时, 已停止电推杆");
+        ESP_LOGI(TAG, "SEAT_MOVE 超时, 已停止电推杆");
     }
 
     // --- 特殊座椅模式: 准备阶段 自动导航菜单 ---
@@ -834,7 +814,7 @@ void RNetController::seatTick()
         {
             seatMenuEnter();
             _specialMenuEntered = true;
-            Serial.println("[Seat] 特殊模式: 已发送进入座椅菜单");
+            ESP_LOGI(TAG, "特殊模式: 已发送进入座椅菜单");
         }
         else if (!_specialPrepDone)
         {
@@ -847,7 +827,7 @@ void RNetController::seatTick()
                 _navPulseActive = false;
                 _navResting     = false;
                 _specialPrepDone = true;
-                Serial.printf("[Seat] 特殊模式: 已到达目标菜单项 %d, 准备完成\n", current);
+                ESP_LOGI(TAG, "特殊模式: 已到达目标菜单项 %d, 准备完成", current);
             }
             else if (_navPulseActive)
             {
@@ -858,7 +838,7 @@ void RNetController::seatTick()
                     _navPulseActive  = false;
                     _navResting      = true;
                     _navPulseStartMs = now;
-                    Serial.printf("[Seat] 特殊模式: 菜单导航脉冲结束, 进入休息 当前 %d -> 目标 %d\n",
+                    ESP_LOGD(TAG, "特殊模式: 菜单导航脉冲结束, 当前 %d -> 目标 %d",
                                   current, _specialTarget);
                 }
             }
@@ -868,7 +848,7 @@ void RNetController::seatTick()
                 if (now - _navPulseStartMs >= RNET_NAV_REST_MS)
                 {
                     _navResting = false;
-                    Serial.printf("[Seat] 特殊模式: 休息结束, 当前 %d -> 目标 %d\n",
+                    ESP_LOGD(TAG, "特殊模式: 休息结束, 当前 %d -> 目标 %d",
                                   current, _specialTarget);
                 }
             }
@@ -879,7 +859,7 @@ void RNetController::seatTick()
                 setJoystick(0, dir);
                 _navPulseActive  = true;
                 _navPulseStartMs = now;
-                Serial.printf("[Seat] 特殊模式: 菜单导航中... 当前 %d -> 目标 %d\n",
+                ESP_LOGD(TAG, "特殊模式: 菜单导航中... 当前 %d -> 目标 %d",
                               current, _specialTarget);
             }
         }
@@ -891,7 +871,7 @@ void RNetController::seatTick()
     {
         _specialExecActive = false;
         setJoystick(0, 0);
-        Serial.println("[Seat] SEAT_SPECIAL_EXEC 超时, 摇杆已归零");
+        ESP_LOGI(TAG, "SEAT_SPECIAL_EXEC 超时, 摇杆已归零");
     }
 
     // --- 自主导航: NAV_START 超时自动暂停 ---
@@ -900,29 +880,11 @@ void RNetController::seatTick()
     {
         _navRunning = false;
         setJoystick(0, 0);
-        Serial.println("[Nav] 导航持续指令超时, 自动暂停");
+        ESP_LOGI(TAG, "导航持续指令超时, 自动暂停");
     }
 }
 
 /* ==================== 私有方法 ==================== */
-
-void RNetController::initGPIO()
-{
-    // TJA1055 控制引脚 — 推挽输出
-    pinMode(_pinTjaEn, OUTPUT);
-    pinMode(_pinTjaStb, OUTPUT);
-
-    // 唤醒 MOSFET 控制引脚 — 推挽输出，默认 LOW (MOSFET 关断)
-    pinMode(PIN_WAKE_MOS_H, OUTPUT);
-    digitalWrite(PIN_WAKE_MOS_H, LOW);
-
-    pinMode(PIN_WAKE_MOS_L, OUTPUT);
-    digitalWrite(PIN_WAKE_MOS_L, LOW);
-
-    Serial.printf("[RNet] GPIO 配置完成: TX=%d, RX=%d, WAKE=%d, EN=%d, STB=%d\n",
-                  _pinCanTx, _pinCanRx, _pinWakeMos, _pinTjaEn, _pinTjaStb);
-}
-
 
 bool RNetController::startTWAI()
 {
@@ -941,7 +903,7 @@ bool RNetController::startTWAI()
     {
         if (status.state == TWAI_STATE_RUNNING)
         {
-            Serial.println("[RNet] TWAI 驱动已在运行中");
+            ESP_LOGI(TAG, "TWAI 驱动已在运行中");
             return true;
         }
     }
@@ -959,11 +921,11 @@ bool RNetController::startTWAI()
     esp_err_t err = twai_driver_install(&g_config, &t_config, &f_config);
     if (err == ESP_ERR_INVALID_STATE)
     {
-        Serial.printf("[RNet] 错误: TWAI 驱动已安装 (0x%x)\n", err);
+        ESP_LOGW(TAG, "TWAI 驱动已安装 (0x%x)", err);
     }
     else if (err != ESP_OK)
     {
-        Serial.printf("[RNet] 错误: TWAI 驱动安装失败 (0x%x)\n", err);
+        ESP_LOGE(TAG, "TWAI 驱动安装失败 (0x%x)", err);
         return false;
     }
 
@@ -971,12 +933,12 @@ bool RNetController::startTWAI()
     err = twai_start();
     if (err != ESP_OK)
     {
-        Serial.printf("[RNet] 错误: TWAI 驱动启动失败 (0x%x)\n", err);
+        ESP_LOGE(TAG, "TWAI 驱动启动失败 (0x%x)", err);
         twai_driver_uninstall();
         return false;
     }
 
-    Serial.println("[RNet] TWAI 驱动已启动 (125kbps, Normal Mode)");
+    ESP_LOGI(TAG, "TWAI 驱动已启动 (125kbps, Normal Mode)");
     return true;
 }
 
@@ -987,17 +949,17 @@ bool RNetController::stopTWAI()
     err = twai_stop();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE)
     {
-        Serial.printf("[RNet] 警告: TWAI 停止失败 (0x%x)\n", err);
+        ESP_LOGW(TAG, "TWAI 停止失败 (0x%x)", err);
     }
 
     err = twai_driver_uninstall();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE)
     {
-        Serial.printf("[RNet] 警告: TWAI 卸载失败 (0x%x)\n", err);
+        ESP_LOGW(TAG, "TWAI 卸载失败 (0x%x)", err);
         return false;
     }
 
-    Serial.println("[RNet] TWAI 驱动已停止并卸载");
+    ESP_LOGI(TAG, "TWAI 驱动已停止并卸载");
     return true;
 }
 
@@ -1036,12 +998,11 @@ bool RNetController::sendJoystickFrame(int8_t speed, int8_t turn)
         // 仅在错误不太频繁时打印，避免刷屏
         if ((_txErrorCount % 100) == 1)
         {
-            Serial.printf("[RNet] TX 错误 (0x%x), 累计: %lu\n", err, _txErrorCount);
-            // 检查当前 TWAI 状态
+            ESP_LOGW(TAG, "TX 错误 (0x%x), 累计: %lu", err, _txErrorCount);
             twai_status_info_t status;
             if (twai_get_status_info(&status) == ESP_OK)
             {
-                Serial.printf("[RNet] TWAI 状态: state=%d, tx_err=%lu, rx_err=%lu, tx_failed=%lu, rx_miss=%lu, arb_lost=%lu, bus_err=%lu\n",
+                ESP_LOGW(TAG, "TWAI 状态: state=%d, tx_err=%lu, rx_err=%lu, tx_failed=%lu, rx_miss=%lu, arb_lost=%lu, bus_err=%lu",
                               status.state, status.tx_error_counter, status.rx_error_counter,
                               status.tx_failed_count, status.rx_missed_count,
                               status.arb_lost_count, status.bus_error_count);
@@ -1091,7 +1052,7 @@ bool RNetController::sendActuatorFrame(uint8_t payload)
         _actTxErrorCount++;
         if ((_actTxErrorCount % 50) == 1)
         {
-            Serial.printf("[RNet] Actuator TX 错误 (0x%x), payload=0x%02X, 累计: %lu\n",
+            ESP_LOGW(TAG, "Actuator TX 错误 (0x%x), payload=0x%02X, 累计: %lu",
                           err, payload, _actTxErrorCount);
         }
         return false;
@@ -1135,7 +1096,7 @@ void RNetController::handleActuatorTick()
         if (_actStopCounter == 0)
         {
             _actState = ActuatorState::ACT_IDLE;
-            Serial.printf("[RNet] 电推杆 idle 刷新完成, Motor=%d -> IDLE\n", _actMotor);
+            ESP_LOGI(TAG, "电推杆 idle 刷新完成, Motor=%d -> IDLE", _actMotor);
         }
         break;
     }
@@ -1162,7 +1123,7 @@ void RNetController::handleHornTick()
     {
         _hornStopSent = true;
         hornOff();
-        Serial.println("[RNet] 喇叭停止");
+        ESP_LOGI(TAG, "喇叭停止");
     }
 }
 
@@ -1174,7 +1135,7 @@ void RNetController::heartbeatTask(void *pvParameter)
     TickType_t xLastWakeTime = xTaskGetTickCount();
     const TickType_t xPeriod = pdMS_TO_TICKS(RNET_TX_PERIOD_MS);
 
-    Serial.println("[RNet] 心跳任务已启动 (10ms 周期)");
+    ESP_LOGI(TAG, "心跳任务已启动 (10ms 周期)");
 
     while (self->_taskRunning)
     {
@@ -1227,7 +1188,7 @@ void RNetController::heartbeatTask(void *pvParameter)
     }
 
     // 任务退出前，发送最后一帧停止指令
-    Serial.println("[RNet] 心跳任务即将退出，发送最终停止帧...");
+    ESP_LOGI(TAG, "心跳任务即将退出，发送最终停止帧...");
     self->sendJoystickFrame(0, 0);
 
     // 排除 vTaskDelete 重复
