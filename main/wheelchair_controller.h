@@ -125,4 +125,9 @@ int8_t WheelchairGetSpeedPct(void);
 /** 设置速度百分比 (0-100，超出范围自动截断) */
 void   WheelchairSetSpeedPct(int8_t pct);
 
+/**
+ * @brief 检查 RNetController 是否处于 ERROR 状态（CAN 总线故障等）
+ */
+bool WheelchairIsRNetError(void);
+
 #endif // WHEELCHAIR_CONTROLLER_H

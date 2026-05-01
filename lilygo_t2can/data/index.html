@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>R-Net Controller</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:      #111;
+    --card:    #1e1e1e;
+    --border:  #333;
+    --accent:  #00b4d8;
+    --ok:      #2ecc71;
+    --warn:    #f39c12;
+    --danger:  #e74c3c;
+    --text:    #e0e0e0;
+    --muted:   #777;
+  }
+
+  body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif;
+         font-size: 15px; overscroll-behavior: none; }
+
+  /* ---- Tab bar ---- */
+  .tabs { display: flex; border-bottom: 1px solid var(--border); background: var(--card); }
+  .tab  { flex: 1; padding: 12px 0; text-align: center; cursor: pointer;
+          color: var(--muted); font-weight: 600; letter-spacing: .04em; transition: color .15s; }
+  .tab.active { color: var(--accent); border-bottom: 2px solid var(--accent); }
+
+  .page { display: none; padding: 14px 12px; }
+  .page.active { display: block; }
+
+  /* ---- Status bar ---- */
+  .status-bar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .badge { display: flex; align-items: center; gap: 6px; background: var(--card);
+           border: 1px solid var(--border); border-radius: 20px; padding: 5px 12px;
+           font-size: 13px; }
+  .dot   { width: 8px; height: 8px; border-radius: 50%; }
+  .dot-ok     { background: var(--ok); }
+  .dot-warn   { background: var(--warn); }
+  .dot-off    { background: var(--muted); }
+
+  /* ---- Card ---- */
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+          padding: 16px; margin-bottom: 14px; }
+  .card h3 { margin-bottom: 12px; font-size: 13px; text-transform: uppercase;
+             letter-spacing: .08em; color: var(--muted); }
+
+  /* ---- Joystick pad ---- */
+  #joy-zone { position: relative; width: min(280px, 90vw); height: min(280px, 90vw);
+              background: var(--card); border: 2px solid var(--border); border-radius: 50%;
+              margin: 0 auto 16px; touch-action: none; cursor: crosshair; }
+  #joy-thumb { position: absolute; width: 60px; height: 60px;
+               background: var(--accent); border-radius: 50%; opacity: .85;
+               transform: translate(-50%, -50%); pointer-events: none;
+               transition: background .1s; }
+  #joy-thumb.active { background: var(--ok); }
+
+  /* ---- Speed control ---- */
+  .speed-row { display: flex; align-items: center; gap: 12px; }
+  .speed-row span { min-width: 46px; text-align: right; font-size: 20px; font-weight: 700;
+                    color: var(--accent); }
+  input[type=range] { flex: 1; accent-color: var(--accent); height: 6px; }
+
+  /* ---- Buttons grid ---- */
+  .btn-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .btn { padding: 14px 6px; background: var(--card); border: 1px solid var(--border);
+         border-radius: 8px; color: var(--text); font-size: 13px; font-weight: 600;
+         cursor: pointer; text-align: center; user-select: none; transition: background .1s; }
+  .btn:active, .btn.pressed { background: var(--accent); color: #000; }
+
+  /* ---- Parameter table ---- */
+  .param-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .param-row label { flex: 0 0 140px; font-size: 13px; color: var(--muted); }
+  .param-row input[type=range] { flex: 1; accent-color: var(--accent); }
+  .param-row .val { min-width: 40px; text-align: right; font-weight: 700; color: var(--accent); }
+  .param-save { display: block; width: 100%; padding: 12px; margin-top: 6px;
+                background: var(--accent); border: none; border-radius: 8px;
+                color: #000; font-size: 15px; font-weight: 700; cursor: pointer; }
+
+  /* ---- Telemetry ---- */
+  .tele-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+  .tele-card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+               padding: 12px; text-align: center; }
+  .tele-card .big { font-size: 28px; font-weight: 700; color: var(--accent); }
+  .tele-card .lbl { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  #batt-chart { width: 100%; height: 100px; }
+
+  /* ---- Log ---- */
+  #log-box { background: #0a0a0a; border: 1px solid var(--border); border-radius: 8px;
+             padding: 10px; font-family: monospace; font-size: 12px; color: #aaa;
+             height: 160px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+
+  .danger-btn { background: var(--danger) !important; color: #fff !important;
+                border-color: var(--danger) !important; }
+</style>
+</head>
+<body>
+
+<div class="tabs">
+  <div class="tab active" onclick="showTab('drive')">Ohjaus</div>
+  <div class="tab" onclick="showTab('params')">Parametrit</div>
+  <div class="tab" onclick="showTab('tele')">Huoltodata</div>
+</div>
+
+<!-- ================================================================ DRIVE -->
+<div id="page-drive" class="page active">
+
+  <div class="status-bar">
+    <div class="badge"><div id="dot-ps4" class="dot dot-off"></div><span id="lbl-ps4">PS4 ei yhdistetty</span></div>
+    <div class="badge"><div id="dot-can" class="dot dot-off"></div><span id="lbl-can">CAN ei aktiivinen</span></div>
+    <div class="badge"><span id="lbl-method">—</span></div>
+    <div class="badge"><span id="lbl-batt">Akku: —%</span></div>
+  </div>
+
+  <div class="card">
+    <h3>Virtuaalijoystick</h3>
+    <div id="joy-zone">
+      <div id="joy-thumb"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Maksiminopeus</h3>
+    <div class="speed-row">
+      <input type="range" id="speed-slider" min="0" max="100" step="25" value="75"
+             oninput="onSpeedInput(this.value)">
+      <span id="speed-val">75%</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Toiminnot</h3>
+    <div class="btn-grid">
+      <div class="btn" id="btn-horn"
+           ontouchstart="sendCmd('horn_on')" ontouchend="sendCmd('horn_off')"
+           onmousedown="sendCmd('horn_on')" onmouseup="sendCmd('horn_off')">📯 Torvi</div>
+      <div class="btn" onclick="sendCmd('indicator_left')">◀ Vasen</div>
+      <div class="btn" onclick="sendCmd('indicator_right')">Oikea ▶</div>
+      <div class="btn" onclick="sendCmd('hazards')">⚠ Hätävilkut</div>
+      <div class="btn" onclick="sendCmd('lights')">💡 Valot</div>
+      <div class="btn" style="color:var(--muted)">—</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ============================================================== PARAMS -->
+<div id="page-params" class="page">
+
+  <div class="card">
+    <h3>Ajoprofiili</h3>
+
+    <div class="param-row">
+      <label>Maksiminopeus</label>
+      <input type="range" id="p-speed" min="0" max="100" step="1" value="75"
+             oninput="document.getElementById('pv-speed').textContent=this.value+'%'">
+      <span class="val" id="pv-speed">75%</span>
+    </div>
+
+    <div class="param-row">
+      <label>Kiihtyvyys</label>
+      <input type="range" id="p-accel" min="1" max="10" step="1" value="5"
+             oninput="document.getElementById('pv-accel').textContent=this.value">
+      <span class="val" id="pv-accel">5</span>
+    </div>
+
+    <div class="param-row">
+      <label>Hidastuvuus</label>
+      <input type="range" id="p-decel" min="1" max="10" step="1" value="5"
+             oninput="document.getElementById('pv-decel').textContent=this.value">
+      <span class="val" id="pv-decel">5</span>
+    </div>
+
+    <div class="param-row">
+      <label>Kääntymisnopeus</label>
+      <input type="range" id="p-turn" min="1" max="10" step="1" value="5"
+             oninput="document.getElementById('pv-turn').textContent=this.value">
+      <span class="val" id="pv-turn">5</span>
+    </div>
+
+    <div class="param-row">
+      <label>Profiili (1–4)</label>
+      <input type="range" id="p-profile" min="1" max="4" step="1" value="1"
+             oninput="document.getElementById('pv-profile').textContent=this.value">
+      <span class="val" id="pv-profile">1</span>
+    </div>
+
+    <button class="param-save" onclick="saveParams()">Tallenna parametrit</button>
+  </div>
+
+  <div id="log-box" style="margin-top:0"></div>
+
+</div>
+
+<!-- ================================================================ TELE -->
+<div id="page-tele" class="page">
+
+  <div class="tele-grid">
+    <div class="tele-card"><div class="big" id="t-batt">—</div><div class="lbl">Akku %</div></div>
+    <div class="tele-card"><div class="big" id="t-uptime">—</div><div class="lbl">Käyntiika (s)</div></div>
+    <div class="tele-card"><div class="big" id="t-speed">—</div><div class="lbl">Nopeus asetus %</div></div>
+    <div class="tele-card"><div class="big" id="t-motor">—</div><div class="lbl">Moottori (raw)</div></div>
+  </div>
+
+  <div class="card">
+    <h3>Akkuhistoria (60 s)</h3>
+    <canvas id="batt-chart"></canvas>
+  </div>
+
+  <div style="display:flex;gap:10px;margin-bottom:14px">
+    <button class="btn" style="flex:1" onclick="downloadCSV()">⬇ Lataa CSV</button>
+    <button class="btn danger-btn" style="flex:1" onclick="clearHistory()">🗑 Nollaa data</button>
+  </div>
+
+  <div id="log-box" id="log-tele"></div>
+
+</div>
+
+<script>
+// =========================================================================
+// WebSocket
+// =========================================================================
+let ws = null;
+let wsRetry = 1000;
+let state  = { speed_pct:75, ps4:false, can:false, battery_pct:0,
+               uptime_s:0, method:'—', batt_history:[] };
+let teleLog = [];
+
+function wsConnect() {
+  ws = new WebSocket('ws://' + location.host + '/ws');
+  ws.onopen  = () => { wsRetry = 1000; log('WS yhdistetty'); };
+  ws.onclose = () => { log('WS katkennut — yritetään uudelleen...'); setTimeout(wsConnect, wsRetry); wsRetry = Math.min(wsRetry*2, 16000); };
+  ws.onmessage = e => { try { handleMsg(JSON.parse(e.data)); } catch(_) {} };
+}
+
+function handleMsg(d) {
+  if (d.type !== 'status') return;
+  state = d;
+  updateUI(d);
+}
+
+function sendCmd(cmd, value) {
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ cmd, value: value !== undefined ? value : 0 }));
+}
+
+// =========================================================================
+// UI update
+// =========================================================================
+function updateUI(d) {
+  // Status badges
+  const ps4ok = d.ps4;
+  const canok = d.can;
+  document.getElementById('dot-ps4').className = 'dot ' + (ps4ok ? 'dot-ok' : 'dot-off');
+  document.getElementById('lbl-ps4').textContent = ps4ok ? 'PS4 yhdistetty' : 'PS4 ei yhdistetty';
+  document.getElementById('dot-can').className = 'dot ' + (canok ? 'dot-ok' : 'dot-off');
+  document.getElementById('lbl-can').textContent = canok ? 'CAN aktiivinen' : 'CAN ei aktiivinen';
+  document.getElementById('lbl-method').textContent = d.method || '—';
+  document.getElementById('lbl-batt').textContent = 'Akku: ' + (d.battery_pct || 0) + '%';
+
+  // Speed slider (don't override while user is dragging)
+  if (!sliderDragging) {
+    document.getElementById('speed-slider').value = d.speed_pct;
+    document.getElementById('speed-val').textContent = d.speed_pct + '%';
+    document.getElementById('p-speed').value = d.speed_pct;
+    document.getElementById('pv-speed').textContent = d.speed_pct + '%';
+  }
+
+  // Telemetry tab
+  document.getElementById('t-batt').textContent   = d.battery_pct || '—';
+  document.getElementById('t-uptime').textContent = d.uptime_s || '—';
+  document.getElementById('t-speed').textContent  = d.speed_pct + '%';
+
+  // Battery history chart
+  if (Array.isArray(d.batt_history) && d.batt_history.length) {
+    drawChart(d.batt_history);
+    // Record for CSV
+    teleLog.push({ ts: Date.now(), batt: d.battery_pct, speed: d.speed_pct, uptime: d.uptime_s });
+    if (teleLog.length > 3600) teleLog.shift();
+  }
+}
+
+// =========================================================================
+// Battery mini chart (pure canvas, no external lib)
+// =========================================================================
+function drawChart(data) {
+  const canvas = document.getElementById('batt-chart');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.offsetWidth * (window.devicePixelRatio || 1);
+  const H = canvas.offsetHeight * (window.devicePixelRatio || 1);
+  canvas.width  = W;
+  canvas.height = H;
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.strokeStyle = '#00b4d8';
+  ctx.lineWidth   = 2;
+  ctx.beginPath();
+
+  const n = data.length;
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * W;
+    const y = H - (data[i] / 100) * H;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Grid line at 20%
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(0, H * 0.8); ctx.lineTo(W, H * 0.8);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+// =========================================================================
+// Speed slider
+// =========================================================================
+let sliderDragging  = false;
+let speedSendTimer  = null;
+const slider = document.getElementById('speed-slider');
+
+function onSpeedInput(v) {
+  document.getElementById('speed-val').textContent = v + '%';
+  clearTimeout(speedSendTimer);
+  speedSendTimer = setTimeout(() => sendCmd('set_speed', parseInt(v)), 300);
+}
+
+slider.addEventListener('pointerdown', () => sliderDragging = true);
+slider.addEventListener('pointerup',   () => { sliderDragging = false; onSpeedInput(slider.value); });
+
+// =========================================================================
+// Virtual joystick
+// =========================================================================
+const joyZone  = document.getElementById('joy-zone');
+const joyThumb = document.getElementById('joy-thumb');
+let joyActive  = false;
+let joyOriginX = 0, joyOriginY = 0;
+let joySendTimer = null;
+
+function joyPos(cx, cy) {
+  const rect = joyZone.getBoundingClientRect();
+  const r    = rect.width / 2;
+  let dx = cx - (rect.left + r);
+  let dy = cy - (rect.top  + r);
+  const dist = Math.hypot(dx, dy);
+  if (dist > r - 30) { dx *= (r-30)/dist; dy *= (r-30)/dist; }
+  joyThumb.style.left = (r + dx) + 'px';
+  joyThumb.style.top  = (r + dy) + 'px';
+  // Map -1..1 to -128..127
+  const nx = Math.round((dx / (r-30)) * 127);
+  const ny = Math.round((dy / (r-30)) * 127);
+  return { x: nx, y: ny };
+}
+
+function joyReset() {
+  const rect = joyZone.getBoundingClientRect();
+  const r = rect.width / 2;
+  joyThumb.style.left = r + 'px';
+  joyThumb.style.top  = r + 'px';
+  joyThumb.classList.remove('active');
+  sendCmd('joy', 0);
+}
+
+joyZone.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  joyActive = true;
+  joyThumb.classList.add('active');
+  const { x, y } = joyPos(e.clientX, e.clientY);
+  scheduleJoySend(x, y);
+});
+joyZone.addEventListener('pointermove', e => {
+  if (!joyActive) return;
+  e.preventDefault();
+  const { x, y } = joyPos(e.clientX, e.clientY);
+  scheduleJoySend(x, y);
+});
+joyZone.addEventListener('pointerup',     () => { joyActive = false; joyReset(); });
+joyZone.addEventListener('pointercancel', () => { joyActive = false; joyReset(); });
+
+function scheduleJoySend(x, y) {
+  clearTimeout(joySendTimer);
+  joySendTimer = setTimeout(() => {
+    // Pack x into high byte, y into low byte of a 16-bit signed int
+    const packed = (((x & 0xFF) << 8) | (y & 0xFF)) & 0xFFFF;
+    sendCmd('joy', packed > 32767 ? packed - 65536 : packed);
+  }, 20); // 50 Hz
+}
+
+// Init thumb position
+window.addEventListener('DOMContentLoaded', () => {
+  const rect = joyZone.getBoundingClientRect();
+  const r = rect.width / 2;
+  joyThumb.style.left = r + 'px';
+  joyThumb.style.top  = r + 'px';
+});
+
+// =========================================================================
+// Params: save
+// =========================================================================
+function saveParams() {
+  const speed = parseInt(document.getElementById('p-speed').value);
+  sendCmd('set_speed', speed);
+  log('Parametrit tallennettu: nopeus=' + speed + '%');
+}
+
+// =========================================================================
+// CSV download
+// =========================================================================
+function downloadCSV() {
+  let csv = 'timestamp_ms,battery_pct,speed_pct,uptime_s\n';
+  for (const row of teleLog) {
+    csv += `${row.ts},${row.batt},${row.speed},${row.uptime}\n`;
+  }
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = 'rnet_telemetry.csv'; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function clearHistory() {
+  if (!confirm('Nollataan kaikki tallennettu data?')) return;
+  teleLog = [];
+  log('Data nollattu');
+}
+
+// =========================================================================
+// Tab switching
+// =========================================================================
+function showTab(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  const idx = { drive:0, params:1, tele:2 }[name];
+  document.querySelectorAll('.tab')[idx].classList.add('active');
+}
+
+// =========================================================================
+// Log helper
+// =========================================================================
+function log(msg) {
+  const boxes = document.querySelectorAll('#log-box');
+  const line  = new Date().toISOString().slice(11,19) + ' ' + msg + '\n';
+  boxes.forEach(b => { b.textContent += line; b.scrollTop = b.scrollHeight; });
+}
+
+// =========================================================================
+// Clock sync to ESP32
+// =========================================================================
+function syncClock() {
+  fetch('/api/time', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ unix: Math.floor(Date.now() / 1000) })
+  }).catch(() => {});
+}
+
+// =========================================================================
+// Boot
+// =========================================================================
+syncClock();
+wsConnect();
+</script>
+</body>
+</html>

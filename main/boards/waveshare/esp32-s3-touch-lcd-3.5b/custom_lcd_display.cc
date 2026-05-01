@@ -580,7 +580,51 @@ void CustomLcdDisplay::SetupUI()
     if (bottom_bar_)        lv_obj_move_foreground(bottom_bar_);
 
     /* ====================================================================
-     * 7. 5 Hz 定时刷新 IMU 标签
+     * 7. 告警横幅（安全状态异常时浮于顶栏下方，初始隐藏）
+     * ==================================================================== */
+    alert_banner_ = lv_obj_create(scr);
+    lv_obj_set_pos(alert_banner_, 0, TOP_BAR_H);
+    lv_obj_set_size(alert_banner_, LV_HOR_RES, 38);
+    lv_obj_set_style_bg_color(alert_banner_, lv_color_hex(0xCC0000), 0);
+    lv_obj_set_style_bg_opa(alert_banner_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(alert_banner_, 0, 0);
+    lv_obj_set_style_radius(alert_banner_, 0, 0);
+    lv_obj_set_style_pad_all(alert_banner_, 0, 0);
+    lv_obj_clear_flag(alert_banner_, LV_OBJ_FLAG_SCROLLABLE);
+
+    alert_label_ = lv_label_create(alert_banner_);
+    lv_label_set_text(alert_label_, LV_SYMBOL_WARNING " EMERGENCY STOP! " LV_SYMBOL_WARNING);
+    lv_obj_set_style_text_color(alert_label_, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(alert_label_, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_flag(alert_banner_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(alert_banner_);
+
+    /* ====================================================================
+     * 8. RNetState ERROR 全屏覆盖（CAN 总线故障提示，初始隐藏）
+     * ==================================================================== */
+    rnet_err_overlay_ = lv_obj_create(scr);
+    lv_obj_set_pos(rnet_err_overlay_, 0, 0);
+    lv_obj_set_size(rnet_err_overlay_, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_style_bg_color(rnet_err_overlay_, lv_color_hex(0x7A0000), 0);
+    lv_obj_set_style_bg_opa(rnet_err_overlay_, LV_OPA_90, 0);
+    lv_obj_set_style_border_width(rnet_err_overlay_, 0, 0);
+    lv_obj_set_style_radius(rnet_err_overlay_, 0, 0);
+    lv_obj_clear_flag(rnet_err_overlay_, LV_OBJ_FLAG_SCROLLABLE);
+
+    rnet_err_label_ = lv_label_create(rnet_err_overlay_);
+    lv_label_set_text(rnet_err_label_,
+                      LV_SYMBOL_WARNING "\n\n"
+                      "R-Net ERROR\n"
+                      "CAN Bus Failure\n\n"
+                      LV_SYMBOL_WARNING);
+    lv_obj_set_style_text_color(rnet_err_label_, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_align(rnet_err_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(rnet_err_label_, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_flag(rnet_err_overlay_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(rnet_err_overlay_);
+
+    /* ====================================================================
+     * 9. 5 Hz 定时刷新 IMU 标签
      * ==================================================================== */
     imu_timer_ = lv_timer_create(ImuTimerCb, 200, this);
 }
@@ -769,5 +813,29 @@ void CustomLcdDisplay::ImuTimerCb(lv_timer_t* timer)
     /* 速度标签 */
     if (self->spd_label_) {
         lv_label_set_text_fmt(self->spd_label_, "SPD %d%%", WheelchairGetSpeedPct());
+    }
+
+    /* 告警横幅：EMERGENCY 或 ERROR 时显示 */
+    if (self->alert_banner_ && self->alert_label_) {
+        if (ss == SAFETY_EMERGENCY) {
+            lv_label_set_text(self->alert_label_,
+                              LV_SYMBOL_WARNING " EMERGENCY STOP! 急停 " LV_SYMBOL_WARNING);
+            lv_obj_clear_flag(self->alert_banner_, LV_OBJ_FLAG_HIDDEN);
+        } else if (ss == SAFETY_ERROR) {
+            lv_label_set_text(self->alert_label_,
+                              LV_SYMBOL_WARNING " SAFETY ERROR " LV_SYMBOL_WARNING);
+            lv_obj_clear_flag(self->alert_banner_, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(self->alert_banner_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    /* RNet ERROR 全屏覆盖：CAN 总线故障时显示 */
+    if (self->rnet_err_overlay_) {
+        if (WheelchairIsRNetError()) {
+            lv_obj_clear_flag(self->rnet_err_overlay_, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(self->rnet_err_overlay_, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 }

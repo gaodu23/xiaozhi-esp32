@@ -196,8 +196,8 @@
   | 底栏 | 偏航角（HWT101）、俯仰角/横滚角（QMI8658）、安全状态（NORMAL/STOP/ERROR） |
 
 - [x] **底栏 IMU 覆盖层**：`CustomLcdDisplay::SetupUI()` 创建 LVGL 标签，格式 `Y:+45.2° P:+3.1° R:-1.5° [SAFE]`，5Hz 定时刷新
-- [ ] 安全状态异常时顶部显示红色告警横幅
-- [ ] RNetState 变为 ERROR 时全屏告警提示
+- [x] 安全状态异常时顶部显示红色告警横幅（`alert_banner_`，EMERGENCY/ERROR 时浮现于顶栏下方，38px 红底白字）
+- [x] RNetState 变为 ERROR 时全屏告警提示（`rnet_err_overlay_`，90% 透明度深红背景全屏覆盖，显示 R-Net ERROR / CAN Bus Failure）
 
 ---
 

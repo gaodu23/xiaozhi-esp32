@@ -577,3 +577,10 @@ void WheelchairSetSpeedPct(int8_t pct)
     if (pct > 100) pct = 100;
     s_drive_speed_pct = pct;
 }
+
+bool WheelchairIsRNetError(void)
+{
+    RNetController* rnet = GetWheelchairController();
+    if (!rnet) return false;
+    return rnet->getState() == RNetState::ERROR;
+}

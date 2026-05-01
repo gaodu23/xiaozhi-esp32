@@ -48,6 +48,12 @@ private:
     lv_obj_t* imu_label_   = nullptr;   ///< IMU 姿态角条
     lv_timer_t* imu_timer_ = nullptr;   ///< 5Hz 定时刷新
 
+    /* ---- 告警覆盖层 ---- */
+    lv_obj_t* alert_banner_     = nullptr;  ///< 安全状态告警横幅（EMERGENCY/ERROR 时显示）
+    lv_obj_t* alert_label_      = nullptr;  ///< 告警横幅文字
+    lv_obj_t* rnet_err_overlay_ = nullptr;  ///< RNetState ERROR 时全屏覆盖层
+    lv_obj_t* rnet_err_label_   = nullptr;  ///< 全屏错误文字
+
     /* ---- LCD 刷新回调（原有）---- */
     static bool lvgl_port_flush_io_ready_callback(esp_lcd_panel_io_handle_t panel_io,
                                                    esp_lcd_panel_io_event_data_t* edata,
